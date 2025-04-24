@@ -1,5 +1,7 @@
-use bitflags::bitflags;
+mod point;
+
 use std::ops::{Index, IndexMut, Sub};
+use bitflags::bitflags;
 
 type Line = u16;
 const WALL_LINE: Line = 0b_1110_0000_0000_0111;
@@ -7,18 +9,6 @@ const FULL_LINE: Line = 0b_1111_1111_1111_1111;
 
 const WIDTH: usize = 10;
 const HEIGHT: usize = 20;
-
-macro_rules! combine_arrays {
-    ($val1:expr; $n:expr, $val2:expr; $m:expr) => {{
-        const N: usize = $n;
-        const M: usize = $m;
-        const NM: usize = N + M;
-        let mut arr = [0u8; NM];
-        arr[..N].fill($val1);
-        arr[N..].fill($val2);
-        arr
-    }};
-}
 type Grid = [Line; HEIGHT + 5];
 const GRID: Grid = [
     WALL_LINE, WALL_LINE, WALL_LINE, WALL_LINE, WALL_LINE, WALL_LINE, WALL_LINE, WALL_LINE,
@@ -367,8 +357,7 @@ fn get_axis<T: From<bool> + Sub<Output = T>>(neg: bool, pos: bool) -> T {
 impl GameState {
     fn update(&mut self) {
         let (mut x, mut y) = self.pos;
-        self.frames_without_falling += 1;
-        let mut should_fall = self.frames_without_falling >= 30;
+        let mut should_fall = false;
 
         'side_movement: {
             let dx = get_axis(
@@ -407,6 +396,8 @@ impl GameState {
         }
 
         'fall: {
+            self.frames_without_falling += 1;
+            should_fall |= self.frames_without_falling >= 30;
             if !should_fall {
                 break 'fall;
             }
@@ -417,6 +408,7 @@ impl GameState {
             }
             self.frames_without_falling = 0;
         }
+
         self.pos = (x, y);
     }
 
