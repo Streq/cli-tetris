@@ -1,7 +1,13 @@
 mod point;
 
-use std::ops::{Index, IndexMut, Sub};
 use bitflags::bitflags;
+use color_eyre::Result;
+use ratatui::crossterm::event::{
+    Event, KeyCode, KeyEvent, KeyEventKind, KeyEventState, KeyModifiers,
+};
+use ratatui::crossterm::{ExecutableCommand, event};
+use ratatui::{DefaultTerminal, Frame};
+use std::ops::{Index, IndexMut, Sub};
 
 type Line = u16;
 const WALL_LINE: Line = 0b_1110_0000_0000_0111;
@@ -70,8 +76,9 @@ impl Rotation4 {
 }
 
 #[repr(u8)]
-#[derive(Copy, Clone)]
+#[derive(Copy, Clone, Default)]
 enum Tetramino {
+    #[default]
     O = 0,
     I(Rotation2),
     S(Rotation2),
@@ -266,6 +273,7 @@ impl Tetramino {
     }
 }
 
+#[derive(Default)]
 struct TetraminoMap<T> {
     content: [T; 7],
 }
@@ -290,7 +298,7 @@ type TetraminoBoard = TetraminoMap<Grid>;
 type TetraminoCount = TetraminoMap<usize>;
 
 bitflags! {
-    #[derive(Copy, Clone, Eq, PartialEq)]
+    #[derive(Copy, Clone, Eq, PartialEq, Default)]
     pub struct Input: u8 {
         const Up    = 1<<0;
         const Down  = 1<<1;
@@ -304,6 +312,7 @@ bitflags! {
 }
 
 //(previous, current)
+#[derive(Default)]
 struct InputBuffer(Input, Input);
 impl InputBuffer {
     fn is_pressed(&self, input: Input) -> bool {
@@ -331,6 +340,8 @@ impl InputBuffer {
         *self = InputBuffer(Input::empty(), Input::empty());
     }
 }
+
+#[derive(Default)]
 struct GameState {
     input: InputBuffer,
     collision_board: Grid,
@@ -447,6 +458,102 @@ impl GameState {
     }
 }
 
+#[derive(Default)]
+struct Renderer {}
+impl Renderer {}
+
+#[derive(Default)]
+struct RatatuiApp {
+    tetris: GameState,
+    input: Input,
+    running: bool,
+}
+
+struct TerminalGuard;
+
+impl TerminalGuard {
+    fn new() -> Self {
+        std::io::stdout()
+            .execute(event::EnableMouseCapture)
+            .unwrap();
+        Self {}
+    }
+}
+
+impl Drop for TerminalGuard {
+    fn drop(&mut self) {
+        let _ = std::io::stdout()
+            .execute(event::DisableMouseCapture)
+            .unwrap();
+        ratatui::restore();
+    }
+}
+
+impl RatatuiApp {
+    pub fn run(mut self, mut terminal: DefaultTerminal) -> Result<()> {
+        self.running = true;
+        while self.running {
+            self.draw(&mut terminal)?;
+            self.handle_input()?;
+            self.update();
+        }
+        Ok(())
+    }
+
+    fn render(&self, frame: &mut Frame) {}
+    fn handle_input(&mut self) -> Result<()> {
+        match event::read()? {
+            Event::FocusGained => {}
+            Event::FocusLost => {}
+            Event::Key(KeyEvent {
+                code,
+                kind: kind @ (KeyEventKind::Press | KeyEventKind::Release),
+                ..
+            }) => {
+                let pressed = if let KeyEventKind::Press = kind {
+                    true
+                } else {
+                    false
+                };
+
+                let mut press = |i: Input| self.input.set(i, pressed);
+
+                match code {
+                    KeyCode::Left => press(Input::Left),
+                    KeyCode::Right => press(Input::Right),
+                    KeyCode::Up => press(Input::Up),
+                    KeyCode::Down => press(Input::Down),
+                    KeyCode::Enter => press(Input::START),
+                    KeyCode::Backspace => press(Input::SELECT),
+                    KeyCode::Char(c) => match c.to_ascii_lowercase() {
+                        'z' => press(Input::A),
+                        'x' => press(Input::B),
+                        _ => {}
+                    },
+                    _ => {}
+                }
+            }
+            Event::Mouse(_) => {}
+            Event::Paste(_) => {}
+            Event::Resize(_, _) => {}
+            Event::Key(_) => {}
+        }
+
+        Ok(())
+    }
+    fn update(&mut self) {
+        self.tetris.update();
+    }
+
+    fn draw(&self, terminal: &mut DefaultTerminal) -> Result<()> {
+        terminal.draw(|frame| self.render(frame))?;
+        Ok(())
+    }
+}
+
 fn main() {
-    println!("Hello, world!");
+    let terminal = ratatui::init();
+    let _ = TerminalGuard::new();
+
+    RatatuiApp::default().run(terminal);
 }
