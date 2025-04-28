@@ -2,12 +2,20 @@ mod point;
 
 use bitflags::bitflags;
 use color_eyre::Result;
+use color_eyre::owo_colors::OwoColorize;
 use ratatui::crossterm::event::{
     Event, KeyCode, KeyEvent, KeyEventKind, KeyEventState, KeyModifiers,
 };
 use ratatui::crossterm::{ExecutableCommand, event};
+use ratatui::layout::Alignment::Center;
+use ratatui::layout::{Constraint, Flex, Layout, Margin, Rect};
+use ratatui::prelude::{Alignment, Stylize};
+use ratatui::style::{Color, Style};
+use ratatui::widgets::block::Title;
+use ratatui::widgets::{Block, BorderType, Borders, Paragraph, Wrap};
 use ratatui::{DefaultTerminal, Frame};
 use std::ops::{Index, IndexMut, Sub};
+use std::time::Duration;
 
 type Line = u16;
 const WALL_LINE: Line = 0b_1110_0000_0000_0111;
@@ -331,7 +339,7 @@ impl InputBuffer {
         self.was_pressed(input) && !self.is_pressed(input)
     }
 
-    fn push(&mut self, input: Input) {
+    fn update(&mut self, input: Input) {
         self.0 = self.1;
         self.1 = input;
     }
@@ -366,7 +374,9 @@ fn get_axis<T: From<bool> + Sub<Output = T>>(neg: bool, pos: bool) -> T {
 }
 
 impl GameState {
-    fn update(&mut self) {
+    fn update(&mut self, input: Input) {
+        self.input.update(input);
+
         let (mut x, mut y) = self.pos;
         let mut should_fall = false;
 
@@ -493,15 +503,180 @@ impl RatatuiApp {
     pub fn run(mut self, mut terminal: DefaultTerminal) -> Result<()> {
         self.running = true;
         while self.running {
-            self.draw(&mut terminal)?;
             self.handle_input()?;
-            self.update();
+            //self.update();
+            self.draw(&mut terminal)?;
         }
         Ok(())
     }
 
-    fn render(&self, frame: &mut Frame) {}
+    fn render(&self, frame: &mut Frame) {
+        let area = frame.area();
+
+        let area = area.clamp(Rect::new(0, 0, 32, 30));
+
+        let w = area.width;
+        let h = area.height;
+        if w < 32 || h < 30 {
+            Self::draw_too_small(frame, area, w, h);
+        } else {
+            self.draw_tetris(frame, area);
+        }
+    }
+
+    fn draw_too_small(frame: &mut Frame, area: Rect, w: u16, h: u16) {
+        let too_small_block = Block::new()
+            .borders(Borders::all())
+            .border_type(BorderType::Rounded)
+            .border_style(Style::new())
+            .title_top("Too small!")
+            .title_style(Style::from(Color::Red))
+            .title_alignment(Center);
+
+        let inner = Self::center(
+            too_small_block.inner(area),
+            Constraint::Min(0),
+            Constraint::Max(2),
+        );
+        frame.render_widget(too_small_block, area);
+
+        let too_small_text = Paragraph::new(format!("need: 32x30, have: {w}x{h}"))
+            .centered()
+            .wrap(Wrap { trim: false })
+            .fg(Color::Red);
+        frame.render_widget(too_small_text, inner);
+    }
+
+    fn draw_tetris(&self, frame: &mut Frame, area: Rect) {
+        let tetris = Block::new()
+            .borders(Borders::all())
+            .border_type(BorderType::Rounded)
+            .border_style(Style::new())
+            .title_style(Style::from(Color::Green))
+            .title_alignment(Center);
+        frame.render_widget(tetris.clone().title_top("TETRIS"), area);
+
+        let inner = tetris.inner(area);
+
+        let h_layout =
+            Layout::horizontal([Constraint::Min(10), Constraint::Min(12), Constraint::Min(8)]);
+
+        let [left, middle, right] = h_layout.areas(inner);
+        'left: {
+            let v_layout = Layout::vertical([
+                Constraint::Length(2),
+                Constraint::Length(3),
+                Constraint::Length(21),
+                Constraint::Length(1),
+            ]);
+
+            let [_, game_type, stats, _] = v_layout.areas(left);
+
+            frame.render_widget(tetris.clone().title_top("type"), game_type);
+            frame.render_widget(tetris.clone().title_top("stats"), stats);
+        }
+
+        'center: {
+            let v_layout = Layout::vertical([
+                Constraint::Length(1),
+                Constraint::Length(3),
+                Constraint::Length(22),
+                Constraint::Length(1),
+            ]);
+
+            let [_, lines, game, _] = v_layout.areas(middle);
+            frame.render_widget(tetris.clone().title_top("lines"), lines);
+            frame.render_widget(tetris.clone().title_top("game"), game);
+        }
+
+        'right: {
+            let v_layout = Layout::vertical([
+                Constraint::Length(2), //
+                Constraint::Length(3), //top
+                Constraint::Length(1), //
+                Constraint::Length(3), //score
+                Constraint::Length(1), //
+                Constraint::Length(6), //next
+                Constraint::Length(1), //
+                Constraint::Length(3), //level
+                Constraint::Length(1), //
+                Constraint::Length(5), //input
+                Constraint::Length(2), //
+            ]);
+            let [_, top, _, score, _, next, _, level, _, input, _] = v_layout.areas(right);
+
+            'top: {
+                let area = top;
+                let widget = tetris.clone().title_top("Top");
+                let inner = widget.inner(area);
+                let top_score = 0;
+                frame.render_widget(Paragraph::new(format!("{:0>6}", top_score)), inner);
+                frame.render_widget(widget, area);
+            }
+            'score: {
+                let area = score;
+                let widget = tetris.clone().title_top("Score");
+                let inner = widget.inner(area);
+                let score = 0;
+                frame.render_widget(Paragraph::new(format!("{:0>6}", score)), inner);
+                frame.render_widget(widget, area);
+            }
+            'next: {
+                let area = next;
+                let widget = tetris.clone().title_top("Next");
+                let inner = widget.inner(area);
+                let next = self.tetris.next_tetramino;
+                let shape = next.get_shape();
+
+                fn line_to_str(line: Line) -> [u8; 4] {
+                    [
+                        if line & 1 == 0 { b' ' } else { b'#' },
+                        if line & (1 << 1) == 0 { b' ' } else { b'#' },
+                        if line & (1 << 2) == 0 { b' ' } else { b'#' },
+                        if line & (1 << 3) == 0 { b' ' } else { b'#' },
+                    ]
+                }
+                let line0_ = line_to_str(shape[2]);
+                let line1_ = line_to_str(shape[3]);
+
+                let line0 = unsafe { std::str::from_utf8_unchecked(&line0_) };
+                let line1 = unsafe { std::str::from_utf8_unchecked(&line1_) };
+
+                frame.render_widget(Paragraph::new(format!("{line0}\n{line1}")), inner);
+                frame.render_widget(widget, area);
+            }
+            'level: {
+                let area = level;
+                let widget = tetris.clone().title_top("Level");
+                let inner = widget.inner(area);
+                let score = 0;
+                frame.render_widget(Paragraph::new(format!("{:0>6}", score)), inner);
+                frame.render_widget(widget, area);
+            }
+            'input: {
+                let area = input;
+                let widget = tetris.clone().title_top("Input");
+                let inner = widget.inner(area);
+                let score = 0;
+                frame.render_widget(Paragraph::new(format!("{:0>6}", score)), inner);
+                frame.render_widget(widget, area);
+            }
+        }
+    }
+
+    fn center(area: Rect, horizontal: Constraint, vertical: Constraint) -> Rect {
+        let [area] = Layout::horizontal([horizontal])
+            .flex(Flex::Center)
+            .areas(area);
+        let [area] = Layout::vertical([vertical]).flex(Flex::Center).areas(area);
+        area
+    }
+
     fn handle_input(&mut self) -> Result<()> {
+        if !event::poll(Duration::from_secs_f64(1.0 / 60.0))? {
+            return Ok(());
+        }
+
         match event::read()? {
             Event::FocusGained => {}
             Event::FocusLost => {}
@@ -525,6 +700,7 @@ impl RatatuiApp {
                     KeyCode::Down => press(Input::Down),
                     KeyCode::Enter => press(Input::START),
                     KeyCode::Backspace => press(Input::SELECT),
+                    KeyCode::Esc | KeyCode::Char('q' | 'Q') => self.quit(),
                     KeyCode::Char(c) => match c.to_ascii_lowercase() {
                         'z' => press(Input::A),
                         'x' => press(Input::B),
@@ -542,18 +718,22 @@ impl RatatuiApp {
         Ok(())
     }
     fn update(&mut self) {
-        self.tetris.update();
+        self.tetris.update(self.input);
     }
 
     fn draw(&self, terminal: &mut DefaultTerminal) -> Result<()> {
         terminal.draw(|frame| self.render(frame))?;
         Ok(())
     }
+
+    fn quit(&mut self) {
+        self.running = false;
+    }
 }
 
-fn main() {
-    let terminal = ratatui::init();
+fn main() -> Result<()> {
     let _ = TerminalGuard::new();
+    color_eyre::install()?;
 
-    RatatuiApp::default().run(terminal);
+    RatatuiApp::default().run(ratatui::init())
 }
