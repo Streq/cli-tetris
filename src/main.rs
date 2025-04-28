@@ -616,6 +616,7 @@ impl RatatuiApp {
             'score: {
                 let area = score;
                 let widget = tetris.clone().title_top("Score");
+                
                 let inner = widget.inner(area);
                 let score = 0;
                 frame.render_widget(Paragraph::new(format!("{:0>6}", score)), inner);
@@ -628,14 +629,21 @@ impl RatatuiApp {
                 let next = self.tetris.next_tetramino;
                 let shape = next.get_shape();
 
+                fn bool_to_tile(b: bool) -> u8 {
+                    if b { b'#' } else { b' ' }
+                }
+                fn line_to_tile(line: Line, mask: u16) -> u8 {
+                    bool_to_tile(line & mask != 0)
+                }
                 fn line_to_str(line: Line) -> [u8; 4] {
                     [
-                        if line & 1 == 0 { b' ' } else { b'#' },
-                        if line & (1 << 1) == 0 { b' ' } else { b'#' },
-                        if line & (1 << 2) == 0 { b' ' } else { b'#' },
-                        if line & (1 << 3) == 0 { b' ' } else { b'#' },
+                        line_to_tile(line, 1 << 0),
+                        line_to_tile(line, 1 << 1),
+                        line_to_tile(line, 1 << 2),
+                        line_to_tile(line, 1 << 3),
                     ]
                 }
+
                 let line0_ = line_to_str(shape[2]);
                 let line1_ = line_to_str(shape[3]);
 
@@ -649,8 +657,8 @@ impl RatatuiApp {
                 let area = level;
                 let widget = tetris.clone().title_top("Level");
                 let inner = widget.inner(area);
-                let score = 0;
-                frame.render_widget(Paragraph::new(format!("{:0>6}", score)), inner);
+                let level = 1;
+                frame.render_widget(Paragraph::new(format!("{:0>3}", level)), inner);
                 frame.render_widget(widget, area);
             }
             'input: {
