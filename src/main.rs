@@ -555,15 +555,18 @@ fn get_bit(source: u16, bit: u16) -> bool {
     source & (1 << bit) != 0
 }
 
+//const BLOCK_CHAR: &'static str = "□";
+const BLOCK_CHAR: &'static str = "#";
+
 const BLOCKS: TetraminoBlocks = TetraminoMap {
     content: [
-        (Color::Red, Color::LightRed, "#"),
-        (Color::Green, Color::LightGreen, "#"),
-        (Color::Blue, Color::LightBlue, "#"),
-        (Color::Yellow, Color::LightYellow, "#"),
-        (Color::Blue, Color::LightBlue, "#"),
-        (Color::Red, Color::LightRed, "#"),
-        (Color::Green, Color::LightGreen, "#"),
+        (Color::Red, Color::LightRed, BLOCK_CHAR),
+        (Color::Green, Color::LightGreen, BLOCK_CHAR),
+        (Color::Blue, Color::LightBlue, BLOCK_CHAR),
+        (Color::Yellow, Color::LightYellow, BLOCK_CHAR),
+        (Color::Blue, Color::LightBlue, BLOCK_CHAR),
+        (Color::Red, Color::LightRed, BLOCK_CHAR),
+        (Color::Green, Color::LightGreen, BLOCK_CHAR),
     ],
 };
 
