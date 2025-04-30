@@ -80,7 +80,7 @@ impl Rotation4 {
             Self::Down => Self::Right,
             Self::Right => Self::Up,
             Self::Up => Self::Left,
-            Self::Left => Self::Right,
+            Self::Left => Self::Down,
         }
     }
 }
@@ -117,8 +117,8 @@ impl From<u8> for Tetramino {
             1 => Tetramino::I(Rotation2::Sideways),
             2 => Tetramino::S(Rotation2::Sideways),
             3 => Tetramino::Z(Rotation2::Sideways),
-            4 => Tetramino::L(Rotation4::Down),
-            5 => Tetramino::J(Rotation4::Down),
+            4 => Tetramino::L(Rotation4::Right),
+            5 => Tetramino::J(Rotation4::Right),
             6 => Tetramino::T(Rotation4::Down),
             _ => unreachable!(),
         }
@@ -319,7 +319,7 @@ impl<T> IndexMut<Tetramino> for TetraminoMap<T> {
 
 type TetraminoBoard = TetraminoMap<Grid>;
 type TetraminoCount = TetraminoMap<usize>;
-type TetraminoColor = TetraminoMap<Color>;
+type TetraminoBlocks = TetraminoMap<(Color, Color, &'static str)>;
 
 bitflags! {
     #[derive(Copy, Clone, Eq, PartialEq, Default)]
@@ -555,15 +555,15 @@ fn get_bit(source: u16, bit: u16) -> bool {
     source & (1 << bit) != 0
 }
 
-const COLORS: TetraminoColor = TetraminoMap {
+const BLOCKS: TetraminoBlocks = TetraminoMap {
     content: [
-        Color::Red,
-        Color::Green,
-        Color::Blue,
-        Color::Yellow,
-        Color::Blue,
-        Color::Red,
-        Color::Green,
+        (Color::Red, Color::LightRed, "#"),
+        (Color::Green, Color::LightGreen, "#"),
+        (Color::Blue, Color::LightBlue, "#"),
+        (Color::Yellow, Color::LightYellow, "#"),
+        (Color::Blue, Color::LightBlue, "#"),
+        (Color::Red, Color::LightRed, "#"),
+        (Color::Green, Color::LightGreen, "#"),
     ],
 };
 
@@ -578,8 +578,11 @@ impl Widget for GameWidget<'_> {
                 for i in 0..16 {
                     let c = get_bit(*line, i);
                     if c {
-                        let mut cell = Cell::new("#");
-                        cell.fg = COLORS.content[index];
+                        let (bg, fg, c) = BLOCKS.content[index];
+                        let mut cell = Cell::new(c);
+                        cell.bg = bg;
+                        cell.fg = fg;
+
                         buf[(ox + i - 3, oy + j as u16 - 1)] = cell;
                     }
                 }
@@ -601,8 +604,10 @@ impl Widget for GameWidget<'_> {
             for i in 0..4 {
                 let c = get_bit(*line, i);
                 if c {
-                    let mut cell = Cell::new("#");
-                    cell.fg = COLORS[self.tetramino];
+                    let (bg, fg, c) = BLOCKS[self.tetramino];
+                    let mut cell = Cell::new(c);
+                    cell.bg = bg;
+                    cell.fg = fg;
                     buf[(self.pos.0 + ox + i - 3, self.pos.1 + oy + j as u16 - 1)] = cell;
                 }
             }
@@ -839,8 +844,14 @@ impl RatatuiApp {
                 let line0 = unsafe { std::str::from_utf8_unchecked(&line0_) };
                 let line1 = unsafe { std::str::from_utf8_unchecked(&line1_) };
 
-                frame.render_widget(Paragraph::new(format!("{line0}\n{line1}")), inner);
                 frame.render_widget(widget, area);
+                frame.render_widget(
+                    Paragraph::new(format!("{line0}\n{line1}")),
+                    inner.inner(Margin {
+                        horizontal: 1,
+                        vertical: 1,
+                    }),
+                );
             }
             'level: {
                 let area = level;
