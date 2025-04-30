@@ -110,6 +110,18 @@ macro_rules! tetramino4 {
         result
     }}
 }
+
+const BLOCKS: TetraminoBlocks = TetraminoMap {
+    content: [
+        (Color::Green, Color::LightYellow, BLOCK_CHAR),
+        (Color::Green, Color::LightYellow, BLOCK_CHAR),
+        (Color::Red, Color::LightMagenta, BLOCK_CHAR),
+        (Color::Blue, Color::LightCyan, BLOCK_CHAR),
+        (Color::Red, Color::LightMagenta, BLOCK_CHAR),
+        (Color::Blue, Color::LightCyan, BLOCK_CHAR),
+        (Color::Green, Color::LightYellow, BLOCK_CHAR),
+    ],
+};
 impl From<u8> for Tetramino {
     fn from(value: u8) -> Self {
         match value {
@@ -544,11 +556,31 @@ impl Drop for TerminalGuard {
     }
 }
 
-struct GameWidget<'a> {
-    tetramino_board: &'a TetraminoBoard,
-    grid: &'a Grid,
-    pos: (u16, u16),
-    tetramino: Tetramino,
+struct NextWidget<'a> {
+    next_tetramino: &'a Tetramino,
+}
+
+impl Widget for NextWidget<'_> {
+    fn render(self, area: Rect, buf: &mut Buffer)
+    where
+        Self: Sized,
+    {
+        let shape = self.next_tetramino.get_shape();
+        let (ox, oy) = (area.x, area.y);
+        for (j, line) in shape.iter().enumerate() {
+            for i in 0..4 {
+                let c = get_bit(*line, i);
+                if c {
+                    let (bg, fg, c) = BLOCKS[*self.next_tetramino];
+                    let mut cell = Cell::new(c);
+                    cell.bg = bg;
+                    cell.fg = fg;
+
+                    buf[(ox + i, oy + j as u16 - 1)] = cell;
+                }
+            }
+        }
+    }
 }
 
 fn get_bit(source: u16, bit: u16) -> bool {
@@ -558,18 +590,12 @@ fn get_bit(source: u16, bit: u16) -> bool {
 //const BLOCK_CHAR: &'static str = "□";
 const BLOCK_CHAR: &'static str = "#";
 
-const BLOCKS: TetraminoBlocks = TetraminoMap {
-    content: [
-        (Color::Red, Color::LightRed, BLOCK_CHAR),
-        (Color::Green, Color::LightGreen, BLOCK_CHAR),
-        (Color::Blue, Color::LightBlue, BLOCK_CHAR),
-        (Color::Yellow, Color::LightYellow, BLOCK_CHAR),
-        (Color::Blue, Color::LightBlue, BLOCK_CHAR),
-        (Color::Red, Color::LightRed, BLOCK_CHAR),
-        (Color::Green, Color::LightGreen, BLOCK_CHAR),
-    ],
-};
-
+struct GameWidget<'a> {
+    tetramino_board: &'a TetraminoBoard,
+    grid: &'a Grid,
+    pos: (u16, u16),
+    tetramino: Tetramino,
+}
 impl Widget for GameWidget<'_> {
     fn render(self, area: Rect, buf: &mut Buffer)
     where
@@ -826,30 +852,11 @@ impl RatatuiApp {
                 let next = self.tetris.next_tetramino;
                 let shape = next.get_shape();
 
-                fn bool_to_tile(b: bool) -> u8 {
-                    if b { b'#' } else { b' ' }
-                }
-                fn bit_to_tile(line: Line, mask: u16) -> u8 {
-                    bool_to_tile(line & mask != 0)
-                }
-                fn line_to_str(line: Line) -> [u8; 4] {
-                    [
-                        bit_to_tile(line, 1 << 0),
-                        bit_to_tile(line, 1 << 1),
-                        bit_to_tile(line, 1 << 2),
-                        bit_to_tile(line, 1 << 3),
-                    ]
-                }
-
-                let line0_ = line_to_str(shape[2]);
-                let line1_ = line_to_str(shape[3]);
-
-                let line0 = unsafe { std::str::from_utf8_unchecked(&line0_) };
-                let line1 = unsafe { std::str::from_utf8_unchecked(&line1_) };
-
                 frame.render_widget(widget, area);
                 frame.render_widget(
-                    Paragraph::new(format!("{line0}\n{line1}")),
+                    NextWidget {
+                        next_tetramino: &self.tetris.next_tetramino,
+                    },
                     inner.inner(Margin {
                         horizontal: 1,
                         vertical: 1,
