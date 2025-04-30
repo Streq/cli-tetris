@@ -2,15 +2,17 @@ mod point;
 
 use bitflags::bitflags;
 use color_eyre::Result;
-use color_eyre::owo_colors::OwoColorize;
+use rand::random;
+use ratatui::buffer::{Buffer, Cell};
 use ratatui::crossterm::event::{
     Event, KeyCode, KeyEvent, KeyEventKind, KeyEventState, KeyModifiers,
 };
 use ratatui::crossterm::{ExecutableCommand, event};
 use ratatui::layout::Alignment::Center;
 use ratatui::layout::{Constraint, Flex, Layout, Margin, Rect};
-use ratatui::prelude::{Alignment, Stylize};
+use ratatui::prelude::{Alignment, Stylize, Text, Widget};
 use ratatui::style::{Color, Style};
+use ratatui::text::Span;
 use ratatui::widgets::block::Title;
 use ratatui::widgets::{Block, BorderType, Borders, Paragraph, Wrap};
 use ratatui::{DefaultTerminal, Frame};
@@ -108,7 +110,20 @@ macro_rules! tetramino4 {
         result
     }}
 }
-
+impl From<u8> for Tetramino {
+    fn from(value: u8) -> Self {
+        match value {
+            0 => Tetramino::O,
+            1 => Tetramino::I(Rotation2::Sideways),
+            2 => Tetramino::S(Rotation2::Sideways),
+            3 => Tetramino::Z(Rotation2::Sideways),
+            4 => Tetramino::L(Rotation4::Down),
+            5 => Tetramino::J(Rotation4::Down),
+            6 => Tetramino::T(Rotation4::Down),
+            _ => unreachable!(),
+        }
+    }
+}
 impl From<Tetramino> for usize {
     fn from(value: Tetramino) -> Self {
         match value {
@@ -304,6 +319,7 @@ impl<T> IndexMut<Tetramino> for TetraminoMap<T> {
 
 type TetraminoBoard = TetraminoMap<Grid>;
 type TetraminoCount = TetraminoMap<usize>;
+type TetraminoColor = TetraminoMap<Color>;
 
 bitflags! {
     #[derive(Copy, Clone, Eq, PartialEq, Default)]
@@ -349,7 +365,6 @@ impl InputBuffer {
     }
 }
 
-#[derive(Default)]
 struct GameState {
     input: InputBuffer,
     collision_board: Grid,
@@ -365,6 +380,7 @@ struct GameState {
     level: u16,
 
     frames_without_falling: u8,
+    top_score: u32,
 }
 
 fn get_axis<T: From<bool> + Sub<Output = T>>(neg: bool, pos: bool) -> T {
@@ -373,6 +389,24 @@ fn get_axis<T: From<bool> + Sub<Output = T>>(neg: bool, pos: bool) -> T {
     p - n
 }
 
+impl Default for GameState {
+    fn default() -> Self {
+        Self {
+            input: Default::default(),
+            collision_board: GRID,
+            tetramino_board: Default::default(),
+            tetramino_count: Default::default(),
+            pos: (5, 0),
+            current_tetramino: Default::default(),
+            next_tetramino: Default::default(),
+            score: 0,
+            lines: 0,
+            level: 1,
+            frames_without_falling: 0,
+            top_score: 0,
+        }
+    }
+}
 impl GameState {
     fn update(&mut self, input: Input) {
         self.input.update(input);
@@ -424,6 +458,7 @@ impl GameState {
             }
             if self.check_collision(x, y + 1, &self.current_tetramino) {
                 self.commit();
+                return;
             } else {
                 y = y + 1;
             }
@@ -437,7 +472,7 @@ impl GameState {
         let yu = y as usize;
         let xu = x as u16;
 
-        let lines_to_check: &[Line] = &self.collision_board[yu..yu + 4];
+        let lines_to_check: &[Line] = &self.collision_board[yu..(yu + 4)];
         let tetra_board: [Line; 4] = tetramino.get_shape().map(|it| it << xu);
         lines_to_check
             .into_iter()
@@ -452,7 +487,15 @@ impl GameState {
         let tetramino = self.current_tetramino;
 
         let lines_to_check: &mut [Line] = &mut self.collision_board[yu..yu + 4];
+
         let tetra_board: [Line; 4] = tetramino.get_shape().map(|it| it << xu);
+        lines_to_check
+            .into_iter()
+            .zip(&tetra_board)
+            .for_each(|(a, b)| *a |= b);
+
+        let tetramino_grid = &mut self.tetramino_board[tetramino];
+        let lines_to_check: &mut [Line] = &mut tetramino_grid[yu..yu + 4];
         lines_to_check
             .into_iter()
             .zip(&tetra_board)
@@ -460,11 +503,13 @@ impl GameState {
 
         self.current_tetramino = self.next_tetramino;
         self.next_tetramino = self.generate_next_tetramino();
+        self.frames_without_falling = 0;
         self.pos = (WIDTH as u8 / 2, 0);
     }
 
     fn generate_next_tetramino(&self) -> Tetramino {
-        todo!()
+        let next: u8 = random();
+        Tetramino::from(next % 7)
     }
 }
 
@@ -499,12 +544,136 @@ impl Drop for TerminalGuard {
     }
 }
 
+struct GameWidget<'a> {
+    tetramino_board: &'a TetraminoBoard,
+    grid: &'a Grid,
+    pos: (u16, u16),
+    tetramino: Tetramino,
+}
+
+fn get_bit(source: u16, bit: u16) -> bool {
+    source & (1 << bit) != 0
+}
+
+const COLORS: TetraminoColor = TetraminoMap {
+    content: [
+        Color::Red,
+        Color::Green,
+        Color::Blue,
+        Color::Yellow,
+        Color::Blue,
+        Color::Red,
+        Color::Green,
+    ],
+};
+
+impl Widget for GameWidget<'_> {
+    fn render(self, area: Rect, buf: &mut Buffer)
+    where
+        Self: Sized,
+    {
+        let (ox, oy) = (area.x, area.y);
+        for (index, board) in self.tetramino_board.content.iter().enumerate() {
+            for (j, line) in board.iter().enumerate() {
+                for i in 0..16 {
+                    let c = get_bit(*line, i);
+                    if c {
+                        let mut cell = Cell::new("#");
+                        cell.fg = COLORS.content[index];
+                        buf[(ox + i - 3, oy + j as u16 - 1)] = cell;
+                    }
+                }
+            }
+        }
+
+        /*for (j, line) in self.grid.iter().enumerate() {
+            for i in 0..16 {
+                let c = get_bit(*line, i);
+                if c {
+                    let mut cell = Cell::new("#");
+                    cell.fg = Color::Yellow;
+                    buf[(ox + i-3, oy + j as u16-1)] = cell;
+                }
+            }
+        }*/
+
+        for (j, line) in self.tetramino.get_shape().iter().enumerate() {
+            for i in 0..4 {
+                let c = get_bit(*line, i);
+                if c {
+                    let mut cell = Cell::new("#");
+                    cell.fg = COLORS[self.tetramino];
+                    buf[(self.pos.0 + ox + i - 3, self.pos.1 + oy + j as u16 - 1)] = cell;
+                }
+            }
+        }
+    }
+}
+
+struct InputWidget<'a> {
+    input: &'a InputBuffer,
+}
+
+impl Widget for InputWidget<'_> {
+    fn render(self, area: Rect, buf: &mut Buffer)
+    where
+        Self: Sized,
+    {
+        // ^
+        //< >   A
+        // v  B
+        //
+        // SEL STA
+        let up = (area.left() + 1, area.top() + 0);
+
+        let left = (area.left() + 0, area.top() + 1);
+        let right = (area.left() + 2, area.top() + 1);
+        let a = (area.left() + 6, area.top() + 1);
+
+        let down = (area.left() + 1, area.top() + 2);
+        let b = (area.left() + 4, area.top() + 2);
+
+        let select = (area.left() + 1, area.top() + 4);
+        let start = (area.left() + 5, area.top() + 4);
+
+        let get_color = |button: Input| -> (Color, Color) {
+            match (
+                self.input.was_pressed(button),
+                self.input.is_pressed(button),
+            ) {
+                (false, false) => (Color::Reset, Color::Reset),
+                (false, true) => (Color::Yellow, Color::Red),
+                (true, true) => (Color::Reset, Color::Red),
+                (true, false) => (Color::Red, Color::Reset),
+            }
+        };
+
+        let get_cell = |s: &'static str, button: Input| -> Cell {
+            let (fg, bg) = get_color(button);
+            let mut cell = Cell::new(s);
+            cell.set_fg(fg).set_bg(bg);
+            cell
+        };
+
+        buf[up] = get_cell("^", Input::Up);
+        buf[left] = get_cell("<", Input::Left);
+        buf[right] = get_cell(">", Input::Right);
+        buf[down] = get_cell("v", Input::Down);
+
+        buf[a] = get_cell("A", Input::A);
+        buf[b] = get_cell("B", Input::B);
+
+        buf[select] = get_cell("SEL", Input::SELECT);
+        buf[start] = get_cell("STA", Input::START);
+    }
+}
+
 impl RatatuiApp {
     pub fn run(mut self, mut terminal: DefaultTerminal) -> Result<()> {
         self.running = true;
         while self.running {
             self.handle_input()?;
-            //self.update();
+            self.update();
             self.draw(&mut terminal)?;
         }
         Ok(())
@@ -585,8 +754,28 @@ impl RatatuiApp {
             ]);
 
             let [_, lines, game, _] = v_layout.areas(middle);
-            frame.render_widget(tetris.clone().title_top("lines"), lines);
-            frame.render_widget(tetris.clone().title_top("game"), game);
+            'lines: {
+                let area = lines;
+                frame.render_widget(tetris.clone().title_top("lines"), area);
+            }
+
+            'game: {
+                let area = game;
+                let widget = tetris.clone().title_top("game");
+                let inner = widget.inner(area);
+                frame.render_widget(widget, area);
+
+                let (x, y) = self.tetris.pos;
+
+                let game_widget = GameWidget {
+                    tetramino_board: &self.tetris.tetramino_board,
+                    grid: &self.tetris.collision_board,
+                    pos: (x as u16, y as u16),
+                    tetramino: self.tetris.current_tetramino,
+                };
+
+                frame.render_widget(game_widget, inner);
+            }
         }
 
         'right: {
@@ -609,16 +798,16 @@ impl RatatuiApp {
                 let area = top;
                 let widget = tetris.clone().title_top("Top");
                 let inner = widget.inner(area);
-                let top_score = 0;
+                let top_score = self.tetris.top_score;
                 frame.render_widget(Paragraph::new(format!("{:0>6}", top_score)), inner);
                 frame.render_widget(widget, area);
             }
             'score: {
                 let area = score;
                 let widget = tetris.clone().title_top("Score");
-                
+
                 let inner = widget.inner(area);
-                let score = 0;
+                let score = self.tetris.score;
                 frame.render_widget(Paragraph::new(format!("{:0>6}", score)), inner);
                 frame.render_widget(widget, area);
             }
@@ -632,15 +821,15 @@ impl RatatuiApp {
                 fn bool_to_tile(b: bool) -> u8 {
                     if b { b'#' } else { b' ' }
                 }
-                fn line_to_tile(line: Line, mask: u16) -> u8 {
+                fn bit_to_tile(line: Line, mask: u16) -> u8 {
                     bool_to_tile(line & mask != 0)
                 }
                 fn line_to_str(line: Line) -> [u8; 4] {
                     [
-                        line_to_tile(line, 1 << 0),
-                        line_to_tile(line, 1 << 1),
-                        line_to_tile(line, 1 << 2),
-                        line_to_tile(line, 1 << 3),
+                        bit_to_tile(line, 1 << 0),
+                        bit_to_tile(line, 1 << 1),
+                        bit_to_tile(line, 1 << 2),
+                        bit_to_tile(line, 1 << 3),
                     ]
                 }
 
@@ -657,17 +846,16 @@ impl RatatuiApp {
                 let area = level;
                 let widget = tetris.clone().title_top("Level");
                 let inner = widget.inner(area);
-                let level = 1;
+                let level = self.tetris.level;
                 frame.render_widget(Paragraph::new(format!("{:0>3}", level)), inner);
                 frame.render_widget(widget, area);
             }
             'input: {
                 let area = input;
-                let widget = tetris.clone().title_top("Input");
-                let inner = widget.inner(area);
-                let score = 0;
-                frame.render_widget(Paragraph::new(format!("{:0>6}", score)), inner);
-                frame.render_widget(widget, area);
+                let input_widget = InputWidget {
+                    input: &self.tetris.input,
+                };
+                frame.render_widget(input_widget, area);
             }
         }
     }
@@ -681,10 +869,10 @@ impl RatatuiApp {
     }
 
     fn handle_input(&mut self) -> Result<()> {
+        self.input = Input::empty();
         if !event::poll(Duration::from_secs_f64(1.0 / 60.0))? {
             return Ok(());
         }
-
         match event::read()? {
             Event::FocusGained => {}
             Event::FocusLost => {}
