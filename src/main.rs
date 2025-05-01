@@ -100,12 +100,13 @@ enum Tetromino {
     T(Rotation4),
 }
 
-const PALETTES: [([Color; 3], &'static str); 7] = [
+const PALETTES: [([Color; 3], &'static str); 8] = [
     ([Red, LightRed, LightYellow], BLOCK_CHAR),
     ([LightBlue, LightRed, White], BLOCK_CHAR),
-    ([Green, LightGreen, LightCyan], BLOCK_CHAR),
-    ([LightCyan, Cyan, LightYellow], BLOCK_CHAR),
+    ([Magenta, White, LightBlue], BLOCK_CHAR),
+    ([LightYellow, Yellow, White], BLOCK_CHAR),
     ([White, Green, LightGreen], BLOCK_CHAR),
+    ([LightCyan, Cyan, LightYellow], BLOCK_CHAR),
     ([White, LightBlue, Blue], BLOCK_CHAR),
     ([Magenta, LightMagenta, White], BLOCK_CHAR),
 ];
