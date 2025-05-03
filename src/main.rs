@@ -5,23 +5,32 @@
 /// - Little timeout after clearing a line so that we don't accidentally push down on the next piece
 mod point;
 
+use crate::GameType::{TypeA, TypeB};
 use Color::*;
+use MenuCommand::*;
+use MenuState::*;
+use UpdateResult::*;
+use WinState::{Lost, Ongoing, Won};
+use arrayvec::{ArrayString, ArrayVec};
 use bitflags::bitflags;
 use color_eyre::Result;
+use color_eyre::owo_colors::OwoColorize;
 use rand::random;
 use ratatui::buffer::{Buffer, Cell};
 use ratatui::crossterm::event::{Event, KeyCode, KeyEvent, KeyEventKind};
 use ratatui::crossterm::{ExecutableCommand, event};
 use ratatui::layout::Alignment::Center;
 use ratatui::layout::{Constraint, Flex, Layout, Margin, Rect};
-use ratatui::prelude::{Stylize, Widget};
+use ratatui::prelude::{Alignment, Modifier, Stylize, Widget};
 use ratatui::style::{Color, Style};
-use ratatui::widgets::{Block, BorderType, Borders, Paragraph, Wrap};
+use ratatui::text::Text;
+use ratatui::widgets::{Block, BorderType, Borders, Paragraph, Row, Table, TableState, Wrap};
 use ratatui::{DefaultTerminal, Frame};
 use std::ops::{Index, IndexMut, Sub};
 use std::time::Duration;
 
 type Line = u16;
+type NameString = [u8; 6];
 const WALL_LINE: Line = 0b_1110_0000_0000_0111;
 const FULL_LINE: Line = 0b_1111_1111_1111_1111;
 
@@ -361,6 +370,248 @@ impl InputBuffer {
     }
 }
 
+enum MenuState {
+    MainMenu,
+    Paused,
+    GameTypeSelect(GameType),
+    TypeAMenu {
+        level: u8,
+    },
+    TypeBMenu {
+        level: u8,
+        height: u8,
+        selecting_height: bool,
+    },
+    Game(GameState),
+    Congratulations,
+    HighScoreSubmit(HighscoreSubmitData),
+}
+
+struct HighscoreSubmitData {
+    game_type: GameType,
+    place: usize,
+    char_index: usize,
+    name: NameString,
+}
+
+enum UpdateResult {
+    Continue,
+    Break,
+}
+enum MenuCommand {
+    Push(MenuState),
+    Swap(MenuState),
+    Clear(MenuState),
+    Pop,
+}
+impl MenuState {
+    fn update(&mut self, input: &InputBuffer) -> (UpdateResult, Option<MenuCommand>) {
+        match self {
+            MainMenu => {
+                if input.is_pressed(Input::START) {
+                    return (Break, Some(Push(GameTypeSelect(Default::default()))));
+                }
+                (Break, None)
+            }
+            Paused => {
+                if input.is_pressed(Input::START) {
+                    return (Break, Some(Pop));
+                }
+                (Break, None)
+            }
+            GameTypeSelect(selected) => {
+                if input.is_pressed(Input::START) {
+                    return (
+                        Break,
+                        Some(Push(match selected {
+                            TypeA => TypeAMenu { level: 0 },
+                            TypeB => TypeBMenu {
+                                level: 0,
+                                height: 0,
+                                selecting_height: false,
+                            },
+                        })),
+                    );
+                } else if input.is_pressed(Input::Right) {
+                    *selected = TypeB;
+                } else if input.is_pressed(Input::Left) {
+                    *selected = TypeA;
+                }
+
+                (Break, None)
+            }
+            TypeAMenu { level } => {
+                if input.is_pressed(Input::START) {
+                    return (Break, Some(Push(Game(GameState::default()))));
+                }
+                if input.is_pressed(Input::B) {
+                    return (Break, Some(Pop));
+                }
+
+                *level = Self::select_index_from_table(input, *level, 5, 2);
+                (Break, None)
+            }
+            TypeBMenu {
+                level,
+                height,
+                selecting_height,
+            } => {
+                if input.is_pressed(Input::START) {
+                    return (Break, Some(Push(Game(GameState::default()))));
+                } else if input.is_pressed(Input::B) {
+                    return (Break, Some(Pop));
+                } else if input.is_pressed(Input::A) {
+                    *selecting_height = !*selecting_height;
+                } else if !*selecting_height {
+                    *level = Self::select_index_from_table(input, *level, 5, 2);
+                } else {
+                    *height = Self::select_index_from_table(input, *height, 3, 2);
+                }
+                (Break, None)
+            }
+            Game(game_state) => {
+                let win_state = game_state.update(input.1);
+
+                match win_state {
+                    Won => return (Break, Some(Swap(Congratulations))),
+                    Lost => return (Break, Some(Pop)),
+                    Ongoing => {}
+                }
+
+                if input.is_pressed(Input::START) {
+                    (Break, Some(Push(Paused)))
+                } else {
+                    (Break, None)
+                }
+            }
+            Congratulations => (Break, None),
+            HighScoreSubmit(_) => (Break, None),
+        }
+    }
+
+    fn select_index_from_table(input: &InputBuffer, index: u8, columns: u8, rows: u8) -> u8 {
+        let (mut x, mut y) = (index % columns, index / columns);
+        if input.is_pressed(Input::Left) {
+            x = x.saturating_sub(1);
+        } else if input.is_pressed(Input::Right) {
+            x = (columns - 1).min(x + 1);
+        } else if input.is_pressed(Input::Up) {
+            y = y.saturating_sub(1);
+        } else if input.is_pressed(Input::Down) {
+            y = (rows - 1).min(y + 1);
+        }
+
+        x + y * columns
+    }
+}
+
+#[derive(Default)]
+enum GameType {
+    #[default]
+    TypeA,
+    TypeB,
+}
+
+struct Highscore {
+    name: NameString,
+    score: u32,
+    level: u32,
+}
+
+struct Tetris {
+    input: InputBuffer,
+    menu_stack: ArrayVec<MenuState, 5>,
+    leaderboard_type_a: [Highscore; 3],
+    leaderboard_type_b: [Highscore; 3],
+}
+
+impl Default for Tetris {
+    fn default() -> Self {
+        let mut vec = ArrayVec::default();
+        vec.push(MainMenu);
+        //vec.push(Game(GameState::default()));
+        Self {
+            input: Default::default(),
+            menu_stack: vec,
+            leaderboard_type_a: [
+                Highscore {
+                    name: b"CARMEN".to_owned(),
+                    score: 10000,
+                    level: 9,
+                },
+                Highscore {
+                    name: b"MAURO ".to_owned(),
+                    score: 7500,
+                    level: 5,
+                },
+                Highscore {
+                    name: b"FEDE  ".to_owned(),
+                    score: 5000,
+                    level: 0,
+                },
+            ],
+            leaderboard_type_b: [
+                Highscore {
+                    name: b"STREQ ".to_owned(),
+                    score: 2000,
+                    level: 9,
+                },
+                Highscore {
+                    name: b"TANO  ".to_owned(),
+                    score: 1000,
+                    level: 5,
+                },
+                Highscore {
+                    name: b"JUAN  ".to_owned(),
+                    score: 500,
+                    level: 0,
+                },
+            ],
+        }
+    }
+}
+
+impl Tetris {
+    fn update(&mut self, input: Input) {
+        self.input.update(input);
+        let mut commands: ArrayVec<MenuCommand, 5> = ArrayVec::new();
+
+        for state in self.menu_stack.iter_mut().rev() {
+            let (update_result, command) = state.update(&self.input);
+
+            if let Some(command) = command {
+                commands.push(command);
+            }
+
+            match update_result {
+                Continue => continue,
+                Break => break,
+            }
+        }
+
+        let stack = &mut self.menu_stack;
+        for command in commands {
+            match command {
+                Push(state) => stack.push(state),
+                Swap(state) => {
+                    stack.pop();
+                    stack.push(state);
+                }
+                Clear(state) => {
+                    stack.clear();
+                    stack.push(state);
+                }
+                Pop => {
+                    stack.pop();
+                    if stack.is_empty() {
+                        stack.push(MainMenu)
+                    }
+                }
+            }
+        }
+    }
+}
+
 struct GameState {
     input: InputBuffer,
     collision_board: Grid,
@@ -380,14 +631,8 @@ struct GameState {
 
     frames_without_falling: u8,
     top_score: u16,
-}
 
-impl GameState {
-    fn lose(&mut self) {
-        let top = self.top_score;
-        *self = Self::default();
-        self.top_score = top;
-    }
+    game_type: GameType,
 }
 
 fn get_axis<T: From<bool> + Sub<Output = T>>(neg: bool, pos: bool) -> T {
@@ -399,6 +644,7 @@ fn get_axis<T: From<bool> + Sub<Output = T>>(neg: bool, pos: bool) -> T {
 impl Default for GameState {
     fn default() -> Self {
         let mut ret = Self {
+            game_type: Default::default(),
             input: Default::default(),
             collision_board: GRID,
             tetromino_board: Default::default(),
@@ -441,8 +687,19 @@ fn get_fall_speed(level: u16) -> u8 {
 }
 
 const POINTS_PER_LINE: [u16; 5] = [0, 40, 100, 300, 1200];
+
+enum WinState {
+    Won,
+    Lost,
+    Ongoing,
+}
 impl GameState {
-    fn update(&mut self, input: Input) {
+    fn lose(&mut self) {
+        let top = self.top_score;
+        *self = Self::default();
+        self.top_score = top;
+    }
+    fn update(&mut self, input: Input) -> WinState {
         self.input.update(input);
 
         let (mut x, mut y) = self.pos;
@@ -499,14 +756,14 @@ impl GameState {
             }
             self.frames_without_falling = 0;
             if self.check_collision(x, y + 1, &self.current_tetromino) {
-                self.commit();
-                return;
+                return self.commit();
             } else {
                 y = y + 1;
             }
         }
 
         self.pos = (x, y);
+        Ongoing
     }
 
     fn check_collision(&self, x: u8, y: u8, tetromino: &Tetromino) -> bool {
@@ -525,12 +782,11 @@ impl GameState {
         self.score += by;
         self.top_score = self.top_score.max(self.score);
     }
-    fn commit(&mut self) {
+    fn commit(&mut self) -> WinState {
         let (x, y) = self.pos;
 
         if y == 0 {
-            self.lose();
-            return;
+            return Lost;
         }
 
         self.increment_score(self.continuous_fall_count);
@@ -592,6 +848,7 @@ impl GameState {
             self.lines += lines_cleared_count as u16;
             self.update_level();
         }
+        Ongoing
     }
 
     fn update_level(&mut self) {
@@ -617,8 +874,9 @@ impl GameState {
 
 #[derive(Default)]
 struct RatatuiApp {
-    tetris: GameState,
+    tetris: Tetris,
     input: Input,
+    frame: u64,
     running: bool,
 }
 
@@ -828,6 +1086,7 @@ impl RatatuiApp {
             self.handle_input()?;
             self.update();
             self.draw(&mut terminal)?;
+            self.frame += 1;
         }
         Ok(())
     }
@@ -869,8 +1128,8 @@ impl RatatuiApp {
         frame.render_widget(too_small_text, inner);
     }
 
-    fn draw_tetris(&self, frame: &mut Frame, area: Rect) {
-        let [_, col1, col2] = get_palette(self.tetris.level);
+    fn draw_game_state(&self, frame: &mut Frame, inner: Rect, game_state: &GameState) {
+        let [_, col1, col2] = get_palette(game_state.level);
         let style = Style::from((col1, Reset));
 
         let tetris = Block::new()
@@ -879,9 +1138,6 @@ impl RatatuiApp {
             .border_style(Style::new().fg(col1))
             .title_style(Style::from(col2))
             .title_alignment(Center);
-        frame.render_widget(tetris.clone().title_top("TETRIS"), area);
-
-        let inner = tetris.inner(area);
 
         let h_layout =
             Layout::horizontal([Constraint::Min(10), Constraint::Min(12), Constraint::Min(8)]);
@@ -897,7 +1153,21 @@ impl RatatuiApp {
 
             let [_, game_type, stats] = v_layout.areas(left);
 
-            frame.render_widget(tetris.clone().title_top("type"), game_type);
+            {
+                // type
+                let area = game_type;
+                let widget = tetris.clone().title_top("type");
+                let inner = widget.inner(area);
+                frame.render_widget(widget, game_type);
+                frame.render_widget(
+                    Paragraph::new(match game_state.game_type {
+                        TypeA => "TYPE A",
+                        TypeB => "TYPE B",
+                    })
+                    .style(style),
+                    inner,
+                );
+            }
 
             {
                 // stats
@@ -909,7 +1179,7 @@ impl RatatuiApp {
                 for i in 0..7 {
                     let x = inner.x;
                     let y = inner.y + i * 3;
-                    let count = self.tetris.tetromino_count.content[i as usize];
+                    let count = game_state.tetromino_count.content[i as usize];
 
                     let sub_inner = Rect {
                         x,
@@ -921,7 +1191,7 @@ impl RatatuiApp {
                     frame.render_widget(
                         TetrominoWidget {
                             tetromino,
-                            palette: self.tetris.level as usize,
+                            palette: game_state.level as usize,
                         },
                         sub_inner,
                     );
@@ -960,7 +1230,7 @@ impl RatatuiApp {
                 let inner = widget.inner(area);
                 frame.render_widget(widget, area);
                 frame.render_widget(
-                    Paragraph::new(format!("{:0>3}", self.tetris.lines)).style(style),
+                    Paragraph::new(format!("{:0>3}", game_state.lines)).style(style),
                     inner,
                 );
             }
@@ -972,13 +1242,13 @@ impl RatatuiApp {
                 let inner = widget.inner(area);
                 frame.render_widget(widget, area);
 
-                let (x, y) = self.tetris.pos;
+                let (x, y) = game_state.pos;
 
                 let game_widget = GameWidget {
-                    tetromino_board: &self.tetris.tetromino_board,
+                    tetromino_board: &game_state.tetromino_board,
                     pos: (x as u16, y as u16),
-                    tetromino: self.tetris.current_tetromino,
-                    palette: self.tetris.level as usize,
+                    tetromino: game_state.current_tetromino,
+                    palette: game_state.level as usize,
                 };
 
                 frame.render_widget(game_widget, inner);
@@ -1007,7 +1277,7 @@ impl RatatuiApp {
                 let area = top;
                 let widget = tetris.clone().title_top("Top");
                 let inner = widget.inner(area);
-                let top_score = self.tetris.top_score;
+                let top_score = game_state.top_score;
                 frame.render_widget(
                     Paragraph::new(format!("{:0>6}", top_score)).style(style),
                     inner,
@@ -1020,7 +1290,7 @@ impl RatatuiApp {
                 let widget = tetris.clone().title_top("Score");
 
                 let inner = widget.inner(area);
-                let score = self.tetris.score;
+                let score = game_state.score;
                 frame.render_widget(Paragraph::new(format!("{:0>6}", score)).style(style), inner);
                 frame.render_widget(widget, area);
             }
@@ -1029,14 +1299,14 @@ impl RatatuiApp {
                 let area = next;
                 let widget = tetris.clone().title_top("Next");
                 let inner = widget.inner(area);
-                let next = self.tetris.next_tetromino;
+                let next = game_state.next_tetromino;
                 next.get_shape();
 
                 frame.render_widget(widget, area);
                 frame.render_widget(
                     TetrominoWidget {
-                        tetromino: &self.tetris.next_tetromino,
-                        palette: self.tetris.level as usize,
+                        tetromino: &game_state.next_tetromino,
+                        palette: game_state.level as usize,
                     },
                     inner.inner(Margin {
                         horizontal: 1,
@@ -1049,7 +1319,7 @@ impl RatatuiApp {
                 let area = level;
                 let widget = tetris.clone().title_top("Level");
                 let inner = widget.inner(area);
-                let level = self.tetris.level;
+                let level = game_state.level;
                 frame.render_widget(Paragraph::new(format!("{:0>3}", level)).style(style), inner);
                 frame.render_widget(widget, area);
             }
@@ -1061,6 +1331,30 @@ impl RatatuiApp {
                 };
                 frame.render_widget(input_widget, area);
             }
+        }
+    }
+    fn draw_tetris(&self, frame: &mut Frame, area: Rect) {
+        let state = self.tetris.menu_stack.last().unwrap();
+
+        let widget = Block::bordered()
+            .border_type(BorderType::Rounded)
+            .title("Tetris");
+        let inner = widget.inner(area);
+        frame.render_widget(widget, area);
+        let area = inner;
+        match state {
+            MainMenu => self.draw_main_menu(frame, area),
+            Paused => self.draw_pause(frame, area),
+            GameTypeSelect(game_type) => self.draw_game_type_select(frame, area, game_type),
+            TypeAMenu { level } => self.draw_pregame_menu(frame, area, TypeA, *level, 0, false),
+            TypeBMenu {
+                level,
+                height,
+                selecting_height,
+            } => self.draw_pregame_menu(frame, area, TypeB, *level, *height, *selecting_height),
+            Game(game_state) => self.draw_game_state(frame, area, game_state),
+            Congratulations => self.draw_congratulations(frame, area),
+            HighScoreSubmit(data) => self.draw_highscore_submit(frame, area, data),
         }
     }
 
@@ -1103,14 +1397,14 @@ impl RatatuiApp {
                         press(Input::Right);
                         press(Input::Down);
                         self.tetris.frames_without_falling = 100;
-                    }*/
+                    }
                     KeyCode::Char('n') => {
                         self.tetris.level += 1;
                         self.tetris.update_level();
                     }
                     KeyCode::Char('r') => {
                         self.tetris.lose();
-                    }
+                    }*/
                     KeyCode::Left => press(Input::Left),
                     KeyCode::Right => press(Input::Right),
                     KeyCode::Up => press(Input::Up),
@@ -1145,6 +1439,274 @@ impl RatatuiApp {
 
     fn quit(&mut self) {
         self.running = false;
+    }
+
+    fn draw_main_menu(&self, frame: &mut Frame, area: Rect) {
+        let layout = Layout::vertical([
+            Constraint::Fill(1),
+            Constraint::Length(6),
+            Constraint::Fill(2),
+        ]);
+        let [_, title, lower] = layout.areas(area);
+
+        frame.render_widget(
+            Paragraph::new(
+                "#################### ### #####
+  #  #      #  #   #  #  #   
+  #  ####   #  #####  #  #####
+  #  #      #  #  #   #      #
+  #  #####  #  #   # ### #####",
+            ),
+            title,
+        );
+
+        if (self.frame / 30) % 2 == 0 {
+            let layout = Layout::vertical([
+                Constraint::Fill(1),
+                Constraint::Length(1),
+                Constraint::Fill(5),
+            ]);
+            let [_, press_start, _] = layout.areas(lower);
+
+            frame.render_widget(Paragraph::new("Press START").centered(), press_start);
+        }
+    }
+
+    fn draw_pause(&self, p0: &mut Frame, p1: Rect) {
+        todo!()
+    }
+
+    fn draw_game_type_select(&self, frame: &mut Frame, area: Rect, game_type: &GameType) {
+        let layout_v = Layout::vertical([1, 1, 1, 3].map(|s| Constraint::Fill(s)));
+
+        let [game_type_title, game_type_select, music_title, music_select] = layout_v.areas(area);
+
+        {
+            // game_type_title
+            let area = game_type_title;
+            let area = area.inner(Margin::new(2, 1));
+            let [area, _] =
+                Layout::horizontal([Constraint::Fill(1), Constraint::Fill(1)]).areas(area);
+            let block = Block::bordered()
+                .border_type(BorderType::Double)
+                .border_style(Style::from((LightYellow, Reset)));
+            let inner = block.inner(area);
+            frame.render_widget(block, area);
+            frame.render_widget(Paragraph::new("GAME TYPE").centered(), inner);
+        }
+
+        {
+            // game_type_select
+            let area = game_type_select;
+            let mut area = area.inner(Margin::new(2, 0));
+            area.height -= 1;
+            area.x += 1;
+            let area = area;
+            let [mut type_a, mut type_b] =
+                Layout::horizontal([1, 1].map(|s| Constraint::Fill(s))).areas(area);
+            type_a.width -= 1;
+            type_b.width -= 1;
+            let (selected_a, selected_b) = match game_type {
+                TypeA => (true, false),
+                TypeB => (false, true),
+            };
+            let block = Block::bordered()
+                .border_type(BorderType::Thick)
+                .border_style(Style::from((Red, Reset)));
+            let inner = block.inner(type_a);
+            frame.render_widget(block, type_a);
+            let (prefix, suffix, fg) = if selected_a {
+                (b'>', b'<', White)
+            } else {
+                (b' ', b' ', Reset)
+            };
+            let mut buf: [u8; 8] = b" A-TYPE ".to_owned();
+            buf[0] = prefix;
+            buf[7] = suffix;
+            let name = std::str::from_utf8(&buf).unwrap();
+            frame.render_widget(
+                Paragraph::new(name).style(Style::from(fg)).centered(),
+                inner,
+            );
+
+            let block = Block::bordered()
+                .border_type(BorderType::Thick)
+                .border_style(Style::from((LightCyan, Reset)));
+            let inner = block.inner(type_b);
+            frame.render_widget(block, type_b);
+            let (prefix, suffix, fg) = if selected_b {
+                (b'>', b'<', White)
+            } else {
+                (b' ', b' ', Reset)
+            };
+
+            let mut buf: [u8; 8] = b" B-TYPE ".to_owned();
+            buf[0] = prefix;
+            buf[7] = suffix;
+            let name = std::str::from_utf8(&buf).unwrap();
+
+            frame.render_widget(
+                Paragraph::new(name).style(Style::from(fg)).centered(),
+                inner,
+            );
+        }
+
+        {
+            // music_title
+            let area = music_title;
+            let area = area.inner(Margin::new(2, 1));
+            let [area, _] =
+                Layout::horizontal([Constraint::Fill(1), Constraint::Fill(1)]).areas(area);
+            let block = Block::bordered()
+                .border_type(BorderType::Double)
+                .border_style(Style::from((LightYellow, Reset)));
+            let inner = block.inner(area);
+            frame.render_widget(block, area);
+            frame.render_widget(Paragraph::new("MUSIC TYPE").centered(), inner);
+        }
+    }
+
+    fn draw_pregame_menu(
+        &self,
+        frame: &mut Frame,
+        area: Rect,
+        game_type: GameType,
+        level: u8,
+        height: u8,
+        selecting_height: bool,
+    ) {
+        let (title, color, show_height, highscore) = match game_type {
+            TypeA => ("A-TYPE", Red, false, &self.tetris.leaderboard_type_a),
+            TypeB => ("B-TYPE", LightCyan, true, &self.tetris.leaderboard_type_b),
+        };
+
+        let area = area.inner(Margin::new(1, 0));
+        let style = Style::from(color);
+        let block = Block::bordered()
+            .border_type(BorderType::Rounded)
+            .style(style)
+            .title_style(Style::default().fg(White))
+            .title_alignment(Center)
+            .title_top(title);
+
+        let inner = block.inner(area);
+
+        frame.render_widget(block, area);
+
+        let v_layout = Layout::vertical([Constraint::Fill(1), Constraint::Fill(1)]);
+        let [settings, highscores] = v_layout.areas(inner);
+        {
+            //settings
+            let area = settings;
+            let h_layout = Layout::horizontal([Constraint::Fill(1), Constraint::Fill(1)]);
+            let [level_area, height_area] = h_layout.areas(area);
+            {
+                // level
+                let area = level_area;
+
+                let [title_area, select_area] =
+                    Layout::vertical([Constraint::Length(3), Constraint::Length(5)]).areas(area);
+
+                let block = Block::bordered()
+                    .border_type(BorderType::Thick)
+                    .style(style);
+                let inner = block.inner(title_area);
+                frame.render_widget(block, title_area);
+                frame.render_widget(Paragraph::new("LEVEL").style(Style::from(White)), inner);
+
+                let table = Table::new(
+                    [
+                        Row::new(["0", "1", "2", "3", "4"]),
+                        Row::new(["5", "6", "7,", "8", "9"]),
+                    ],
+                    [
+                        Constraint::Length(1),
+                        Constraint::Length(1),
+                        Constraint::Length(1),
+                        Constraint::Length(1),
+                        Constraint::Length(1),
+                    ],
+                )
+                .cell_highlight_style(Style::from(if !selecting_height {
+                    (Black, LightYellow)
+                } else {
+                    (Black, Yellow)
+                }));
+
+                let x = level % 5;
+                let y = level / 5;
+                let mut state = TableState::default();
+                state.select_column(Some(x as usize));
+                state.select(Some(y as usize));
+                frame.render_stateful_widget(table, select_area, &mut state);
+            }
+            if show_height {
+                // level
+                let area = height_area;
+
+                let [title_area, select_area] =
+                    Layout::vertical([Constraint::Length(3), Constraint::Length(5)]).areas(area);
+
+                let block = Block::bordered()
+                    .border_type(BorderType::Thick)
+                    .style(style);
+                let inner = block.inner(title_area);
+                frame.render_widget(block, title_area);
+                frame.render_widget(Paragraph::new("HEIGHT").style(Style::from(White)), inner);
+
+                let table = Table::new(
+                    [Row::new(["0", "1", "2"]), Row::new(["3", "4", "5,"])],
+                    [
+                        Constraint::Length(1),
+                        Constraint::Length(1),
+                        Constraint::Length(1),
+                    ],
+                )
+                .cell_highlight_style(Style::from(if selecting_height {
+                    (Black, LightYellow)
+                } else {
+                    (Black, Yellow)
+                }));
+
+                let x = height % 3;
+                let y = height / 3;
+                let mut state = TableState::default();
+                state.select_column(Some(x as usize));
+                state.select(Some(y as usize));
+                frame.render_stateful_widget(table, select_area, &mut state);
+            }
+        }
+        {
+            //highscores
+            let block = Block::bordered().border_type(BorderType::QuadrantOutside);
+            let area = highscores;
+
+            let layout = Layout::vertical([3, 6]);
+            let [header, body] = layout.areas(area);
+
+            let widths = [1, 6, 6, 2];
+            let table = Table::new([Row::new(["", "NAME", "SCORE", "LV"])], widths).block(block);
+            frame.render_widget(table, header);
+
+
+            //highscore.map(|(highscore, index)|{});
+            let table = Table::new([Row::new(["", "NAME", "SCORE", "LV"])], widths);
+            frame.render_widget(table, body.inner(Margin::new(1,0)));
+
+
+        }
+    }
+
+    fn draw_type_b_menu(&self, p0: &mut Frame, p1: Rect, p2: &u8, p3: &u8) {
+        todo!()
+    }
+
+    fn draw_congratulations(&self, p0: &mut Frame, p1: Rect) {
+        todo!()
+    }
+
+    fn draw_highscore_submit(&self, p0: &mut Frame, p1: Rect, p2: &HighscoreSubmitData) {
+        todo!()
     }
 }
 

@@ -9,6 +9,7 @@ ratatui = "0.29.0"
 color-eyre ="0.6.3"
 crossterm = "0.29.0"
 rand = { version = "0.9.1", features = [] }
+arrayvec = "0.7.6"
 
 [profile.release]
 opt-level = "z"         # Optimize for size ("z" is more aggressive than "s")
