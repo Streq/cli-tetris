@@ -1,5 +1,7 @@
 ///TODO!
 /// - Little timeout after clearing a line so that we don't accidentally push down on the next piece
+/// - Little timeout after losing
+/// - some other stuff like that
 mod point;
 
 use crate::GameType::{TypeA, TypeB};
