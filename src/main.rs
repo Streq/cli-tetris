@@ -5,29 +5,30 @@
 mod point;
 
 use crate::GameType::{TypeA, TypeB};
+use Color::*;
+use MenuStackCommand::*;
+use MenuState::*;
+use UpdateResult::*;
+use WinState::{Lost, Ongoing, Won};
 use arrayvec::ArrayVec;
 use bitflags::bitflags;
-use color_eyre::owo_colors::OwoColorize;
 use color_eyre::Result;
+use color_eyre::owo_colors::OwoColorize;
+use crossterm::style::Color::Grey;
 use rand::random;
 use ratatui::buffer::{Buffer, Cell};
 use ratatui::crossterm::event::{Event, KeyCode, KeyEvent, KeyEventKind};
-use ratatui::crossterm::{event, ExecutableCommand};
+use ratatui::crossterm::{ExecutableCommand, event};
 use ratatui::layout::Alignment::Center;
 use ratatui::layout::{Constraint, Flex, Layout, Margin, Rect};
 use ratatui::prelude::{Alignment, Span, Stylize, Widget};
 use ratatui::style::{Color, Style};
 use ratatui::text::{Text, ToText};
 use ratatui::widgets::{Block, BorderType, Borders, Paragraph, Row, Table, TableState, Wrap};
-use ratatui::{text, DefaultTerminal, Frame};
+use ratatui::{DefaultTerminal, Frame, text};
 use std::io::{Cursor, Write};
-use std::ops::{Deref, Index, IndexMut, Sub};
+use std::ops::{Deref, Index, IndexMut, Range, Sub};
 use std::time::Duration;
-use Color::*;
-use MenuStackCommand::*;
-use MenuState::*;
-use UpdateResult::*;
-use WinState::{Lost, Ongoing, Won};
 
 type Line = u16;
 type NameString = [u8; 6];
@@ -111,19 +112,33 @@ enum Tetromino {
     T(Rotation4),
 }
 
-const PALETTES: [([Color; 3], &'static str); 8] = [
-    ([Red, LightRed, LightYellow], BLOCK_CHAR),
-    ([LightBlue, LightRed, White], BLOCK_CHAR),
-    ([Magenta, White, LightBlue], BLOCK_CHAR),
-    ([LightYellow, Yellow, White], BLOCK_CHAR),
-    ([White, Green, LightGreen], BLOCK_CHAR),
-    ([LightCyan, Cyan, LightYellow], BLOCK_CHAR),
-    ([White, LightBlue, Blue], BLOCK_CHAR),
-    ([Magenta, LightMagenta, White], BLOCK_CHAR),
+const PALETTES: [([Color; 3], [&'static str; 2]); 8] = [
+    ([Red, LightRed, LightYellow], [BLOCK_CHAR, WHITE_BLOCK_CHAR]),
+    ([LightBlue, LightRed, White], [BLOCK_CHAR, WHITE_BLOCK_CHAR]),
+    ([Magenta, LightBlue, White], [BLOCK_CHAR, WHITE_BLOCK_CHAR]),
+    ([LightYellow, White, Yellow], [BLOCK_CHAR, WHITE_BLOCK_CHAR]),
+    ([White, LightGreen, Green], [BLOCK_CHAR, WHITE_BLOCK_CHAR]),
+    (
+        [LightYellow, LightCyan, Cyan],
+        [BLOCK_CHAR, WHITE_BLOCK_CHAR],
+    ),
+    ([White, LightBlue, Blue], [BLOCK_CHAR, WHITE_BLOCK_CHAR]),
+    (
+        [Magenta, LightMagenta, White],
+        [BLOCK_CHAR, WHITE_BLOCK_CHAR],
+    ),
 ];
 
 const BLOCKS: TetrominoBlocks = TetrominoMap {
-    content: [[1, 2], [1, 2], [2, 1], [0, 1], [2, 1], [0, 1], [1, 2]],
+    content: [
+        [0, 2, 1],
+        [0, 2, 1],
+        [1, 2, 0],
+        [2, 0, 0],
+        [1, 2, 0],
+        [2, 0, 0],
+        [0, 2, 1],
+    ],
 };
 impl From<u8> for Tetromino {
     fn from(value: u8) -> Self {
@@ -334,7 +349,7 @@ impl<T> IndexMut<Tetromino> for TetrominoMap<T> {
 
 type TetrominoBoard = TetrominoMap<Grid>;
 type TetrominoCount = TetrominoMap<usize>;
-type TetrominoBlocks = TetrominoMap<[usize; 2]>;
+type TetrominoBlocks = TetrominoMap<[usize; 3]>;
 
 bitflags! {
     #[derive(Copy, Clone, Eq, PartialEq, Default)]
@@ -810,7 +825,19 @@ impl Tetris {
     }
 }
 
+enum GameAnimation {
+    Lose {
+        covered_line_count: usize,
+    },
+    Tetris {
+        clear_step: usize,
+        highest_line: usize,
+        clears: [bool; 4],
+        lines_cleared_count: usize,
+    },
+}
 struct GameState {
+    game_animation: Option<GameAnimation>,
     input: InputBuffer,
     collision_board: Grid,
     tetromino_board: TetrominoBoard,
@@ -829,6 +856,8 @@ struct GameState {
 
     frames_without_falling: u8,
 
+    bright: bool,
+
     params: GameTypeParams,
 }
 
@@ -841,6 +870,7 @@ fn get_axis<T: From<bool> + Sub<Output = T>>(neg: bool, pos: bool) -> T {
 impl Default for GameState {
     fn default() -> Self {
         let mut ret = Self {
+            game_animation: None,
             params: GameTypeParams::TypeA { level: 0 },
             input: Default::default(),
             collision_board: GRID,
@@ -855,6 +885,7 @@ impl Default for GameState {
             level: 0,
             frames_without_falling: 0,
             fall_speed: 0,
+            bright: false,
         };
         ret.tetromino_count[ret.current_tetromino] += 1;
         ret.update_level();
@@ -890,7 +921,132 @@ enum WinState {
     Ongoing,
 }
 impl GameState {
+    fn set_tetromino_tile(
+        x: u8,
+        y: u8,
+        tetromino: Option<u8>,
+        tetromino_board: &mut TetrominoBoard,
+        collision_board: &mut Grid,
+    ) {
+        let mask = 1 << x;
+
+        Self::set_tetromino_line(
+            y as usize,
+            tetromino,
+            mask,
+            tetromino_board,
+            collision_board,
+        );
+    }
+
+    fn set_tetromino_line(
+        y: usize,
+        tetromino: Option<u8>,
+        mask: u16,
+        tetromino_map: &mut TetrominoBoard,
+        collision_board: &mut Grid,
+    ) {
+        let neg_mask = !mask;
+
+        match tetromino {
+            None => {
+                for grid in &mut tetromino_map.content {
+                    grid[y] &= neg_mask;
+                }
+                collision_board[y] &= neg_mask;
+            }
+
+            Some(id) => {
+                for grid in &mut tetromino_map.content {
+                    grid[y] &= neg_mask;
+                }
+                tetromino_map.content[id as usize][y] &= mask;
+                collision_board[y] &= mask;
+            }
+        }
+    }
+
     fn update(&mut self, input: Input) -> WinState {
+        if let Some(anim) = &mut self.game_animation {
+            match anim {
+                GameAnimation::Lose { covered_line_count } => {
+                    self.tetromino_board.content[0][*covered_line_count] = TETRIS_LINE;
+
+                    *covered_line_count += 1;
+
+                    if *covered_line_count > FLOOR_LINE {
+                        return Lost;
+                    }
+                }
+                GameAnimation::Tetris {
+                    clear_step: frame,
+                    highest_line,
+                    clears,
+                    lines_cleared_count,
+                } => 'match_prong: {
+                    let mask = 0b_0000_0001_1000_0000;
+                    let highest_line = *highest_line;
+                    let clears = *clears;
+                    let lines_cleared_count = *lines_cleared_count;
+
+                    self.bright = lines_cleared_count == 4 && *frame % 2 == 0;
+                    let step = *frame / 5;
+                    for (i, clear) in clears.iter().enumerate() {
+                        if !clear {
+                            continue;
+                        };
+                        let line = highest_line + i;
+
+                        let mask = mask | (mask << step) | (mask >> step);
+
+                        Self::set_tetromino_line(
+                            line,
+                            None,
+                            mask,
+                            &mut self.tetromino_board,
+                            &mut self.collision_board,
+                        );
+                    }
+                    if step < WIDTH / 2 {
+                        *frame += 1;
+                        break 'match_prong;
+                    }
+                    self.game_animation = None;
+                    //todo! hacer lo otro
+                    // animacioncita si es tetris (4 líneas)
+
+                    (highest_line..HEIGHT + 1)
+                        .zip(clears)
+                        .for_each(|(y, clear)| {
+                            if clear {
+                                self.collision_board[0..=y].rotate_right(1);
+                                self.collision_board[0] = WALL_LINE;
+                                for grid in &mut self.tetromino_board.content {
+                                    grid[0..=y].rotate_right(1);
+                                    grid[0] = 0;
+                                }
+                            }
+                        });
+                    let n = self.level as u32;
+                    self.increment_score(POINTS_PER_LINE[lines_cleared_count] * (n + 1));
+
+                    match self.params {
+                        GameTypeParams::TypeA { .. } => {
+                            self.lines += lines_cleared_count as u16;
+                            self.update_level();
+                        }
+                        GameTypeParams::TypeB { .. } => {
+                            self.lines = self.lines.saturating_sub(lines_cleared_count as u16);
+                            if self.lines == 0 {
+                                return Won;
+                            }
+                        }
+                    }
+                }
+            }
+            return Ongoing;
+        }
+
         self.input.update(input);
 
         let (mut x, mut y) = self.pos;
@@ -952,7 +1108,6 @@ impl GameState {
                 y = y + 1;
             }
         }
-
         self.pos = (x, y);
         Ongoing
     }
@@ -979,11 +1134,11 @@ impl GameState {
 
         self.continuous_fall_count = 0;
 
-        let yu = y as usize;
+        let highest_line = y as usize;
         let xu = x as u16;
         let tetromino = self.current_tetromino;
 
-        let lines_to_check: &mut [Line] = &mut self.collision_board[yu..FLOOR_LINE];
+        let lines_to_check: &mut [Line] = &mut self.collision_board[highest_line..FLOOR_LINE];
 
         let tetra_board: [Line; 4] = tetromino.get_shape().map(|it| it << xu);
         let mut clears = [false, false, false, false];
@@ -1002,7 +1157,7 @@ impl GameState {
             });
 
         let tetromino_grid = &mut self.tetromino_board[tetromino];
-        let lines_to_check: &mut [Line] = &mut tetromino_grid[yu..HEIGHT + 1];
+        let lines_to_check: &mut [Line] = &mut tetromino_grid[highest_line..HEIGHT + 1];
         lines_to_check
             .into_iter()
             .zip(&tetra_board)
@@ -1023,31 +1178,12 @@ impl GameState {
         }
 
         if lines_cleared_count > 0 {
-            (yu..HEIGHT + 1).zip(clears).for_each(|(y, clear)| {
-                if clear {
-                    self.collision_board[0..=y].rotate_right(1);
-                    self.collision_board[0] = WALL_LINE;
-                    for grid in &mut self.tetromino_board.content {
-                        grid[0..=y].rotate_right(1);
-                        grid[0] = 0;
-                    }
-                }
+            self.game_animation = Some(GameAnimation::Tetris {
+                clear_step: 0,
+                clears,
+                highest_line,
+                lines_cleared_count,
             });
-            let n = self.level as u32;
-            self.increment_score(POINTS_PER_LINE[lines_cleared_count] * (n + 1));
-
-            match self.params {
-                GameTypeParams::TypeA { .. } => {
-                    self.lines += lines_cleared_count as u16;
-                    self.update_level();
-                }
-                GameTypeParams::TypeB { .. } => {
-                    self.lines = self.lines.saturating_sub(lines_cleared_count as u16);
-                    if self.lines == 0 {
-                        return Won;
-                    }
-                }
-            }
         }
         Ongoing
     }
@@ -1139,10 +1275,11 @@ impl Widget for TetrominoWidget<'_> {
             for i in 0..4 {
                 let c = get_bit(*line, i);
                 if c {
-                    let [ibg, ifg] = BLOCKS[*self.tetromino];
-                    let (pal, c) = PALETTES[self.palette % PALETTES.len()];
+                    let [ibg, ifg, ic] = BLOCKS[*self.tetromino];
+                    let (pal, blocks) = PALETTES[self.palette % PALETTES.len()];
                     let bg = pal[ibg];
                     let fg = pal[ifg];
+                    let c = blocks[ic];
                     let mut cell = Cell::new(c);
                     cell.bg = bg;
                     cell.fg = fg;
@@ -1160,6 +1297,7 @@ fn get_bit(source: u16, bit: u16) -> bool {
 
 //const BLOCK_CHAR: &'static str = "□";
 const BLOCK_CHAR: &'static str = "#";
+const WHITE_BLOCK_CHAR: &'static str = "#";
 
 struct GameWidget<'a> {
     tetromino_board: &'a TetrominoBoard,
@@ -1172,7 +1310,7 @@ impl Widget for GameWidget<'_> {
     where
         Self: Sized,
     {
-        let (pal, c) = PALETTES[self.palette % PALETTES.len()];
+        let (pal, blocks) = PALETTES[self.palette % PALETTES.len()];
 
         let (ox, oy) = (area.x, area.y);
         for (index, board) in self.tetromino_board.content.iter().enumerate() {
@@ -1180,9 +1318,10 @@ impl Widget for GameWidget<'_> {
                 for i in 0..16 {
                     let bit = get_bit(*line, i);
                     if bit {
-                        let [ibg, ifg] = BLOCKS.content[index];
+                        let [ibg, ifg, ic] = BLOCKS.content[index];
                         let bg = pal[ibg];
                         let fg = pal[ifg];
+                        let c = blocks[ic];
                         let mut cell = Cell::new(c);
                         cell.bg = bg;
                         cell.fg = fg;
@@ -1208,9 +1347,10 @@ impl Widget for GameWidget<'_> {
             for i in 0..4 {
                 let bit = get_bit(*line, i);
                 if bit {
-                    let [ibg, ifg] = BLOCKS[self.tetromino];
+                    let [ibg, ifg, ic] = BLOCKS[self.tetromino];
                     let bg = pal[ibg];
                     let fg = pal[ifg];
+                    let c = blocks[ic];
 
                     let mut cell = Cell::new(c);
                     cell.bg = bg;
@@ -1350,7 +1490,7 @@ impl RatatuiApp {
         let tetris = Block::new()
             .borders(Borders::all())
             .border_type(BorderType::Rounded)
-            .border_style(Style::new().fg(col1))
+            .border_style(Style::new().fg(if game_state.bright { White } else { col1 }))
             .title_style(Style::from(col2))
             .title_alignment(Center);
 
