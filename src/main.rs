@@ -1,12 +1,12 @@
 ///TODO!
-/// - Little timeout after losing
+/// - LOSE SCREEN
+/// - RANDOMIZE tile look in B-TYPE
 mod point;
 
 use crate::GameType::{TypeA, TypeB};
 use Color::*;
 use MenuStackCommand::*;
 use MenuState::*;
-use UpdateResult::*;
 use WinState::{Lost, Ongoing, Won};
 use arrayvec::ArrayVec;
 use bitflags::bitflags;
@@ -407,20 +407,13 @@ struct HighscoreSubmitData {
     char_index: u8,
     name: [u8; 6],
 }
-
-enum UpdateResult {
-    Continue,
-    Break,
-}
 enum MenuStackCommand {
     Push(MenuParams),
     Swap(MenuParams),
-    Clear(MenuParams),
     Pop,
 }
 
 enum MenuParams {
-    MainMenu,
     Pause,
     GameTypeSelect,
     Game(GameTypeParams),
@@ -477,52 +470,47 @@ impl MenuState {
         &mut self,
         input: &InputBuffer,
         globals: &mut GlobalState,
-    ) -> (UpdateResult, Option<MenuStackCommand>) {
+    ) -> Option<MenuStackCommand> {
         match self {
             MainMenu => {
                 if input.is_pressed(Input::START) {
-                    return (Break, Some(Push(MenuParams::GameTypeSelect)));
+                    return Some(Push(MenuParams::GameTypeSelect));
                 }
-                (Break, None)
+                None
             }
             Paused => {
                 if input.is_pressed(Input::START) {
-                    return (Break, Some(Pop));
+                    return Some(Pop);
                 }
-                (Break, None)
+                None
             }
             GameTypeSelect(selected) => {
                 if input.is_pressed(Input::START) {
-                    return (
-                        Break,
-                        Some(Push(match selected {
-                            TypeA => MenuParams::TypeAMenu,
-                            TypeB => MenuParams::TypeBMenu,
-                        })),
-                    );
+                    return Some(Push(match selected {
+                        TypeA => MenuParams::TypeAMenu,
+                        TypeB => MenuParams::TypeBMenu,
+                    }));
+                } else if input.is_pressed(Input::B) {
+                    return Some(Pop);
                 } else if input.is_pressed(Input::Right) {
                     *selected = TypeB;
                 } else if input.is_pressed(Input::Left) {
                     *selected = TypeA;
                 }
 
-                (Break, None)
+                None
             }
             TypeAMenu { level } => {
                 if input.is_pressed(Input::START) {
-                    return (
-                        Break,
-                        Some(Push(MenuParams::Game(GameTypeParams::TypeA {
-                            level: *level,
-                        }))),
-                    );
-                }
-                if input.is_pressed(Input::B) {
-                    return (Break, Some(Pop));
+                    return Some(Push(MenuParams::Game(GameTypeParams::TypeA {
+                        level: *level,
+                    })));
+                } else if input.is_pressed(Input::B) {
+                    return Some(Pop);
                 }
 
                 *level = Self::select_index_from_table(input, *level, 5, 4);
-                (Break, None)
+                None
             }
             TypeBMenu {
                 level,
@@ -530,15 +518,12 @@ impl MenuState {
                 selecting_height,
             } => {
                 if input.is_pressed(Input::START) {
-                    return (
-                        Break,
-                        Some(Push(MenuParams::Game(GameTypeParams::TypeB {
-                            level: *level,
-                            height: *height,
-                        }))),
-                    );
+                    return Some(Push(MenuParams::Game(GameTypeParams::TypeB {
+                        level: *level,
+                        height: *height,
+                    })));
                 } else if input.is_pressed(Input::B) {
-                    return (Break, Some(Pop));
+                    return Some(Pop);
                 } else if input.is_pressed(Input::A) {
                     *selecting_height = !*selecting_height;
                 } else if !*selecting_height {
@@ -546,7 +531,7 @@ impl MenuState {
                 } else {
                     *height = Self::select_index_from_table(input, *height, 3, 2);
                 }
-                (Break, None)
+                None
             }
             Game(game_state) => {
                 let win_state = game_state.update(input.1);
@@ -592,15 +577,15 @@ impl MenuState {
                             }
                         };
 
-                        return (Break, Some(params));
+                        return Some(params);
                     }
                     Ongoing => {}
                 }
 
                 if input.is_pressed(Input::START) {
-                    (Break, Some(Push(MenuParams::Pause)))
+                    Some(Push(MenuParams::Pause))
                 } else {
-                    (Break, None)
+                    None
                 }
             }
             HighScoreSubmit(data) => {
@@ -647,9 +632,9 @@ impl MenuState {
                 }
 
                 if input.is_pressed(Input::START) {
-                    (Break, Some(Pop))
+                    Some(Pop)
                 } else {
-                    (Break, None)
+                    None
                 }
             }
         }
@@ -672,7 +657,6 @@ impl MenuState {
 
     fn from(params: MenuParams) -> Self {
         match params {
-            MenuParams::MainMenu => MainMenu,
             MenuParams::Pause => Paused,
             MenuParams::GameTypeSelect => GameTypeSelect(TypeA),
             MenuParams::TypeAMenu => TypeAMenu { level: 0 },
@@ -779,15 +763,8 @@ impl Tetris {
         let mut commands: ArrayVec<MenuStackCommand, 5> = ArrayVec::new();
 
         for state in self.menu_stack.iter_mut().rev() {
-            let (update_result, command) = state.update(&self.input, &mut self.globals);
-
-            if let Some(command) = command {
+            if let Some(command) = state.update(&self.input, &mut self.globals) {
                 commands.push(command);
-            }
-
-            match update_result {
-                Continue => continue,
-                Break => break,
             }
         }
 
@@ -805,11 +782,6 @@ impl Tetris {
                     }
                     Swap(state) => {
                         stack.pop();
-                        command = Push(state);
-                        continue;
-                    }
-                    Clear(state) => {
-                        stack.clear();
                         command = Push(state);
                         continue;
                     }
@@ -2217,10 +2189,6 @@ impl RatatuiApp {
 }
 
 fn main() -> Result<()> {
-    // let r = "1000000000";
-    // println!("{r:0<4.5}");
-    // Ok(())
-
     let _ = TerminalGuard::new();
     color_eyre::install()?;
 
