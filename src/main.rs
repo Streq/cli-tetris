@@ -1,7 +1,5 @@
 ///TODO!
-/// - Little timeout after clearing a line so that we don't accidentally push down on the next piece
 /// - Little timeout after losing
-/// - some other stuff like that
 mod point;
 
 use crate::GameType::{TypeA, TypeB};
@@ -13,8 +11,6 @@ use WinState::{Lost, Ongoing, Won};
 use arrayvec::ArrayVec;
 use bitflags::bitflags;
 use color_eyre::Result;
-use color_eyre::owo_colors::OwoColorize;
-use crossterm::style::Color::Grey;
 use rand::random;
 use ratatui::buffer::{Buffer, Cell};
 use ratatui::crossterm::event::{Event, KeyCode, KeyEvent, KeyEventKind};
@@ -23,11 +19,11 @@ use ratatui::layout::Alignment::Center;
 use ratatui::layout::{Constraint, Flex, Layout, Margin, Rect};
 use ratatui::prelude::{Alignment, Span, Stylize, Widget};
 use ratatui::style::{Color, Style};
-use ratatui::text::{Text, ToText};
+use ratatui::text::Text;
 use ratatui::widgets::{Block, BorderType, Borders, Paragraph, Row, Table, TableState, Wrap};
 use ratatui::{DefaultTerminal, Frame, text};
 use std::io::{Cursor, Write};
-use std::ops::{Deref, Index, IndexMut, Range, Sub};
+use std::ops::{Index, IndexMut, Sub};
 use std::time::Duration;
 
 type Line = u16;
@@ -38,13 +34,13 @@ const FULL_LINE: Line = 0b_1111_1111_1111_1111;
 
 const WIDTH: usize = 10;
 const HEIGHT: usize = 20;
-const FLOOR_LINE: usize = HEIGHT + 1;
-type Grid = [Line; HEIGHT + 5];
+const BOTTOM_LINE: usize = HEIGHT + 2;
+type Grid = [Line; HEIGHT + 6];
 const GRID: Grid = [
     WALL_LINE, WALL_LINE, WALL_LINE, WALL_LINE, WALL_LINE, WALL_LINE, WALL_LINE, WALL_LINE,
     WALL_LINE, WALL_LINE, WALL_LINE, WALL_LINE, WALL_LINE, WALL_LINE, WALL_LINE, WALL_LINE,
-    WALL_LINE, WALL_LINE, WALL_LINE, WALL_LINE, WALL_LINE, FULL_LINE, FULL_LINE, FULL_LINE,
-    FULL_LINE,
+    WALL_LINE, WALL_LINE, WALL_LINE, WALL_LINE, WALL_LINE, WALL_LINE, FULL_LINE, FULL_LINE,
+    FULL_LINE, FULL_LINE,
 ];
 
 #[repr(u8)]
@@ -461,7 +457,7 @@ impl GameState {
                     _ => unreachable!(),
                 };
 
-                for i in FLOOR_LINE - garbage_lines..FLOOR_LINE {
+                for i in BOTTOM_LINE - garbage_lines..BOTTOM_LINE {
                     let mask: u16 = random::<u16>() & TETRIS_LINE;
 
                     ret.collision_board[i] |= mask;
@@ -830,10 +826,13 @@ enum GameAnimation {
         covered_line_count: usize,
     },
     Tetris {
-        clear_step: usize,
+        frame: usize,
         highest_line: usize,
         clears: [bool; 4],
         lines_cleared_count: usize,
+    },
+    Commit {
+        frame: usize,
     },
 }
 struct GameState {
@@ -974,16 +973,16 @@ impl GameState {
 
                     *covered_line_count += 1;
 
-                    if *covered_line_count > FLOOR_LINE {
+                    if *covered_line_count > BOTTOM_LINE {
                         return Lost;
                     }
                 }
                 GameAnimation::Tetris {
-                    clear_step: frame,
+                    frame,
                     highest_line,
                     clears,
                     lines_cleared_count,
-                } => 'match_prong: {
+                } => 'prong: {
                     let mask = 0b_0000_0001_1000_0000;
                     let highest_line = *highest_line;
                     let clears = *clears;
@@ -1009,13 +1008,11 @@ impl GameState {
                     }
                     if step < WIDTH / 2 {
                         *frame += 1;
-                        break 'match_prong;
+                        break 'prong;
                     }
                     self.game_animation = None;
-                    //todo! hacer lo otro
-                    // animacioncita si es tetris (4 líneas)
 
-                    (highest_line..HEIGHT + 1)
+                    (highest_line..BOTTOM_LINE)
                         .zip(clears)
                         .for_each(|(y, clear)| {
                             if clear {
@@ -1042,6 +1039,13 @@ impl GameState {
                             }
                         }
                     }
+                }
+                GameAnimation::Commit { frame } => 'prong: {
+                    if *frame < 10 {
+                        *frame += 1;
+                        break 'prong;
+                    }
+                    self.game_animation = None;
                 }
             }
             return Ongoing;
@@ -1138,7 +1142,7 @@ impl GameState {
         let xu = x as u16;
         let tetromino = self.current_tetromino;
 
-        let lines_to_check: &mut [Line] = &mut self.collision_board[highest_line..FLOOR_LINE];
+        let lines_to_check: &mut [Line] = &mut self.collision_board[highest_line..BOTTOM_LINE];
 
         let tetra_board: [Line; 4] = tetromino.get_shape().map(|it| it << xu);
         let mut clears = [false, false, false, false];
@@ -1157,7 +1161,7 @@ impl GameState {
             });
 
         let tetromino_grid = &mut self.tetromino_board[tetromino];
-        let lines_to_check: &mut [Line] = &mut tetromino_grid[highest_line..HEIGHT + 1];
+        let lines_to_check: &mut [Line] = &mut tetromino_grid[highest_line..BOTTOM_LINE];
         lines_to_check
             .into_iter()
             .zip(&tetra_board)
@@ -1179,11 +1183,13 @@ impl GameState {
 
         if lines_cleared_count > 0 {
             self.game_animation = Some(GameAnimation::Tetris {
-                clear_step: 0,
+                frame: 0,
                 clears,
                 highest_line,
                 lines_cleared_count,
             });
+        } else {
+            self.game_animation = Some(GameAnimation::Commit { frame: 0 })
         }
         Ongoing
     }
@@ -1314,7 +1320,7 @@ impl Widget for GameWidget<'_> {
 
         let (ox, oy) = (area.x, area.y);
         for (index, board) in self.tetromino_board.content.iter().enumerate() {
-            for (j, line) in board.iter().enumerate() {
+            for (j, line) in board.iter().skip(2).enumerate() {
                 for i in 0..16 {
                     let bit = get_bit(*line, i);
                     if bit {
@@ -1326,7 +1332,7 @@ impl Widget for GameWidget<'_> {
                         cell.bg = bg;
                         cell.fg = fg;
 
-                        buf[(ox + i - 3, oy + j as u16 - 1)] = cell;
+                        buf[(ox + i - 3, oy + j as u16)] = cell;
                     }
                 }
             }
@@ -1347,6 +1353,12 @@ impl Widget for GameWidget<'_> {
             for i in 0..4 {
                 let bit = get_bit(*line, i);
                 if bit {
+                    let y = self.pos.1 + oy + j as u16 - 2;
+                    if y < oy {
+                        continue;
+                    }
+                    let x = self.pos.0 + ox + i - 3;
+
                     let [ibg, ifg, ic] = BLOCKS[self.tetromino];
                     let bg = pal[ibg];
                     let fg = pal[ifg];
@@ -1355,7 +1367,8 @@ impl Widget for GameWidget<'_> {
                     let mut cell = Cell::new(c);
                     cell.bg = bg;
                     cell.fg = fg;
-                    buf[(self.pos.0 + ox + i - 3, self.pos.1 + oy + j as u16 - 1)] = cell;
+
+                    buf[(x, y)] = cell;
                 }
             }
         }
@@ -1831,7 +1844,7 @@ impl RatatuiApp {
     fn draw_game_type_select(&self, frame: &mut Frame, area: Rect, game_type: &GameType) {
         let layout_v = Layout::vertical([1, 1, 1, 3].map(|s| Constraint::Fill(s)));
 
-        let [game_type_title, game_type_select, music_title, music_select] = layout_v.areas(area);
+        let [game_type_title, game_type_select, _, _] = layout_v.areas(area);
 
         {
             // game_type_title
@@ -1903,19 +1916,19 @@ impl RatatuiApp {
             );
         }
 
-        {
-            // music_title
-            let area = music_title;
-            let area = area.inner(Margin::new(2, 1));
-            let [area, _] =
-                Layout::horizontal([Constraint::Fill(1), Constraint::Fill(1)]).areas(area);
-            let block = Block::bordered()
-                .border_type(BorderType::Double)
-                .border_style(Style::from((LightYellow, Reset)));
-            let inner = block.inner(area);
-            frame.render_widget(block, area);
-            frame.render_widget(Paragraph::new("MUSIC TYPE").centered(), inner);
-        }
+        // {
+        //     // music_title
+        //     let area = music_title;
+        //     let area = area.inner(Margin::new(2, 1));
+        //     let [area, _] =
+        //         Layout::horizontal([Constraint::Fill(1), Constraint::Fill(1)]).areas(area);
+        //     let block = Block::bordered()
+        //         .border_type(BorderType::Double)
+        //         .border_style(Style::from((LightYellow, Reset)));
+        //     let inner = block.inner(area);
+        //     frame.render_widget(block, area);
+        //     frame.render_widget(Paragraph::new("MUSIC TYPE").centered(), inner);
+        // }
     }
 
     fn draw_pregame_menu(
@@ -2155,19 +2168,13 @@ impl RatatuiApp {
     }
 
     fn draw_highscore_submit(&self, frame: &mut Frame, area: Rect, data: &HighscoreSubmitData) {
-        let (title, color, show_height, high_score) = match data.game_type {
-            GameTypeParams::TypeA { .. } => (
-                "A-TYPE",
-                Red,
-                false,
-                &self.tetris.globals.leaderboard_type_a,
-            ),
-            GameTypeParams::TypeB { .. } => (
-                "B-TYPE",
-                LightCyan,
-                true,
-                &self.tetris.globals.leaderboard_type_b,
-            ),
+        let (title, color, high_score) = match data.game_type {
+            GameTypeParams::TypeA { .. } => {
+                ("A-TYPE", Red, &self.tetris.globals.leaderboard_type_a)
+            }
+            GameTypeParams::TypeB { .. } => {
+                ("B-TYPE", LightCyan, &self.tetris.globals.leaderboard_type_b)
+            }
         };
 
         let area = area.inner(Margin::new(1, 0));
