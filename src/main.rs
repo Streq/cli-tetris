@@ -1813,9 +1813,9 @@ impl RatatuiApp {
     }
 
     fn draw_game_type_select(&self, frame: &mut Frame, area: Rect, game_type: &GameType) {
-        let layout_v = Layout::vertical([1, 1, 1, 3].map(|s| Constraint::Fill(s)));
+        let layout_v = Layout::vertical([1, 1, 4].map(|s| Constraint::Fill(s)));
 
-        let [game_type_title, game_type_select, _, _] = layout_v.areas(area);
+        let [game_type_title, game_type_select, how_to_play] = layout_v.areas(area);
 
         {
             // game_type_title
@@ -1887,19 +1887,13 @@ impl RatatuiApp {
             );
         }
 
-        // {
-        //     // music_title
-        //     let area = music_title;
-        //     let area = area.inner(Margin::new(2, 1));
-        //     let [area, _] =
-        //         Layout::horizontal([Constraint::Fill(1), Constraint::Fill(1)]).areas(area);
-        //     let block = Block::bordered()
-        //         .border_type(BorderType::Double)
-        //         .border_style(Style::from((LightYellow, Reset)));
-        //     let inner = block.inner(area);
-        //     frame.render_widget(block, area);
-        //     frame.render_widget(Paragraph::new("MUSIC TYPE").centered(), inner);
-        // }
+        {
+            // how to play
+             let area = how_to_play;
+             let area = area.inner(Margin::new(2, 1));
+
+            frame.render_widget(Paragraph::new("CONTROLS:\nArrow keys\nZ\nX\nEnter"), area);
+         }
     }
 
     fn draw_pregame_menu(
