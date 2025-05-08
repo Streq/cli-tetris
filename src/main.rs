@@ -1,6 +1,5 @@
-///TODO!
-/// - LOSE SCREEN
-/// - RANDOMIZE tile look in B-TYPE
+//TODO!
+// save game to file
 mod point;
 
 use crate::GameType::{TypeA, TypeB};
@@ -11,7 +10,7 @@ use WinState::{Lost, Ongoing, Won};
 use arrayvec::ArrayVec;
 use bitflags::bitflags;
 use color_eyre::Result;
-use rand::random;
+use rand::{random, random_range};
 use ratatui::buffer::{Buffer, Cell};
 use ratatui::crossterm::event::{Event, KeyCode, KeyEvent, KeyEventKind};
 use ratatui::crossterm::{ExecutableCommand, event};
@@ -450,11 +449,16 @@ impl GameState {
                     _ => unreachable!(),
                 };
 
-                for i in BOTTOM_LINE - garbage_lines..BOTTOM_LINE {
+                for line in BOTTOM_LINE - garbage_lines..BOTTOM_LINE {
                     let mask: u16 = random::<u16>() & TETRIS_LINE;
 
-                    ret.collision_board[i] |= mask;
-                    ret.tetromino_board.content[0][i] |= mask;
+                    ret.collision_board[line] |= mask;
+                    for x in 0..16 {
+                        let board = &mut ret.tetromino_board.content[random_range(0..7)];
+                        let bit = ((mask >> x) & 1) << x;
+
+                        board[line] |= bit;
+                    }
                 }
             }
         }
@@ -762,10 +766,11 @@ impl Tetris {
         self.input.update(input);
         let mut commands: ArrayVec<MenuStackCommand, 5> = ArrayVec::new();
 
-        for state in self.menu_stack.iter_mut().rev() {
-            if let Some(command) = state.update(&self.input, &mut self.globals) {
-                commands.push(command);
-            }
+        let Some(state) = self.menu_stack.last_mut() else {
+            unreachable!()
+        };
+        if let Some(command) = state.update(&self.input, &mut self.globals) {
+            commands.push(command);
         }
 
         let stack = &mut self.menu_stack;
@@ -783,7 +788,7 @@ impl Tetris {
                     Swap(state) => {
                         stack.pop();
                         command = Push(state);
-                        continue;
+                        continue 'l;
                     }
                 }
 
@@ -795,7 +800,7 @@ impl Tetris {
 
 enum GameAnimation {
     Lose {
-        covered_line_count: usize,
+        frame: usize,
     },
     Tetris {
         frame: usize,
@@ -892,24 +897,6 @@ enum WinState {
     Ongoing,
 }
 impl GameState {
-    fn set_tetromino_tile(
-        x: u8,
-        y: u8,
-        tetromino: Option<u8>,
-        tetromino_board: &mut TetrominoBoard,
-        collision_board: &mut Grid,
-    ) {
-        let mask = 1 << x;
-
-        Self::set_tetromino_line(
-            y as usize,
-            tetromino,
-            mask,
-            tetromino_board,
-            collision_board,
-        );
-    }
-
     fn set_tetromino_line(
         y: usize,
         tetromino: Option<u8>,
@@ -931,8 +918,8 @@ impl GameState {
                 for grid in &mut tetromino_map.content {
                     grid[y] &= neg_mask;
                 }
-                tetromino_map.content[id as usize][y] &= mask;
-                collision_board[y] &= mask;
+                tetromino_map.content[id as usize][y] |= mask;
+                collision_board[y] |= mask;
             }
         }
     }
@@ -940,13 +927,24 @@ impl GameState {
     fn update(&mut self, input: Input) -> WinState {
         if let Some(anim) = &mut self.game_animation {
             match anim {
-                GameAnimation::Lose { covered_line_count } => {
-                    self.tetromino_board.content[0][*covered_line_count] = TETRIS_LINE;
-
-                    *covered_line_count += 1;
-
-                    if *covered_line_count > BOTTOM_LINE {
+                GameAnimation::Lose { frame } => {
+                    if input.contains(Input::START) {
                         return Lost;
+                    }
+                    let covered_line_count_prev = *frame / 5;
+                    *frame += 1;
+                    let covered_line_count = *frame / 5;
+
+                    if covered_line_count < BOTTOM_LINE
+                        && covered_line_count != covered_line_count_prev
+                    {
+                        Self::set_tetromino_line(
+                            covered_line_count,
+                            Some(0),
+                            TETRIS_LINE,
+                            &mut self.tetromino_board,
+                            &mut self.collision_board,
+                        );
                     }
                 }
                 GameAnimation::Tetris {
@@ -1026,6 +1024,10 @@ impl GameState {
         self.input.update(input);
 
         let (mut x, mut y) = self.pos;
+        if self.check_collision(x, y, &self.current_tetromino) {
+            self.game_animation = Some(GameAnimation::Lose { frame: 0 });
+            return Ongoing;
+        }
         let mut should_fall = false;
 
         'side_movement: {
@@ -1148,10 +1150,6 @@ impl GameState {
         );
         self.frames_without_falling = 0;
         self.pos = (WIDTH as u8 / 2, 0);
-        let (x, y) = self.pos;
-        if self.check_collision(x, y, &self.current_tetromino) {
-            return Lost;
-        }
 
         if lines_cleared_count > 0 {
             self.game_animation = Some(GameAnimation::Tetris {
@@ -1291,6 +1289,31 @@ impl Widget for GameWidget<'_> {
         let (pal, blocks) = PALETTES[self.palette % PALETTES.len()];
 
         let (ox, oy) = (area.x, area.y);
+
+        for (j, line) in self.tetromino.get_shape().iter().enumerate() {
+            for i in 0..4 {
+                let bit = get_bit(*line, i);
+                if bit {
+                    let y = self.pos.1 + oy + j as u16 - 2;
+                    if y < oy {
+                        continue;
+                    }
+                    let x = self.pos.0 + ox + i - 3;
+
+                    let [ibg, ifg, ic] = BLOCKS[self.tetromino];
+                    let bg = pal[ibg];
+                    let fg = pal[ifg];
+                    let c = blocks[ic];
+
+                    let mut cell = Cell::new(c);
+                    cell.bg = bg;
+                    cell.fg = fg;
+
+                    buf[(x, y)] = cell;
+                }
+            }
+        }
+
         for (index, board) in self.tetromino_board.content.iter().enumerate() {
             for (j, line) in board.iter().skip(2).enumerate() {
                 for i in 0..16 {
@@ -1320,30 +1343,6 @@ impl Widget for GameWidget<'_> {
                 }
             }
         }*/
-
-        for (j, line) in self.tetromino.get_shape().iter().enumerate() {
-            for i in 0..4 {
-                let bit = get_bit(*line, i);
-                if bit {
-                    let y = self.pos.1 + oy + j as u16 - 2;
-                    if y < oy {
-                        continue;
-                    }
-                    let x = self.pos.0 + ox + i - 3;
-
-                    let [ibg, ifg, ic] = BLOCKS[self.tetromino];
-                    let bg = pal[ibg];
-                    let fg = pal[ifg];
-                    let c = blocks[ic];
-
-                    let mut cell = Cell::new(c);
-                    cell.bg = bg;
-                    cell.fg = fg;
-
-                    buf[(x, y)] = cell;
-                }
-            }
-        }
     }
 }
 
@@ -2113,7 +2112,7 @@ impl RatatuiApp {
 
                     let arr = [
                         Span::from(pre),
-                        Span::from(inf).style((Reset, LightYellow)),
+                        Span::from(inf).style((Black, LightYellow)),
                         Span::from(suf),
                     ];
 
