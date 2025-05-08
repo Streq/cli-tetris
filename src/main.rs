@@ -1889,11 +1889,11 @@ impl RatatuiApp {
 
         {
             // how to play
-             let area = how_to_play;
-             let area = area.inner(Margin::new(2, 1));
+            let area = how_to_play;
+            let area = area.inner(Margin::new(2, 1));
 
             frame.render_widget(Paragraph::new("CONTROLS:\nArrow keys\nZ\nX\nEnter"), area);
-         }
+        }
     }
 
     fn draw_pregame_menu(
