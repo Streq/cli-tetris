@@ -1,5 +1,3 @@
-mod point;
-
 use crate::GameType::{TypeA, TypeB};
 use Color::*;
 use MenuStackCommand::*;
