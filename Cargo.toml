@@ -5,11 +5,13 @@ edition = "2024"
 
 [dependencies]
 bitflags = "2.9.0"
-ratatui = "0.29.0"
+ratatui = { version = "0.29.0", features = ["unstable-rendered-line-info"] }
 color-eyre ="0.6.3"
 crossterm = "0.29.0"
 rand = { version = "0.9.1", features = [] }
 arrayvec = "0.7.6"
+bincode = "2.0.1"
+
 
 [profile.release]
 opt-level = "z"         # Optimize for size ("z" is more aggressive than "s")

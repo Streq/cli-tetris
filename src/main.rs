@@ -1,5 +1,3 @@
-//TODO!
-// save game to file
 mod point;
 
 use crate::GameType::{TypeA, TypeB};
@@ -8,6 +6,7 @@ use MenuStackCommand::*;
 use MenuState::*;
 use WinState::{Lost, Ongoing, Won};
 use arrayvec::ArrayVec;
+use bincode::{Decode, Encode};
 use bitflags::bitflags;
 use color_eyre::Result;
 use rand::{random, random_range};
@@ -21,7 +20,8 @@ use ratatui::style::{Color, Style};
 use ratatui::text::Text;
 use ratatui::widgets::{Block, BorderType, Borders, Paragraph, Row, Table, TableState, Wrap};
 use ratatui::{DefaultTerminal, Frame, text};
-use std::io::{Cursor, Write};
+use std::fs::File;
+use std::io::{BufReader, BufWriter, Cursor, Write};
 use std::ops::{Index, IndexMut, Sub};
 use std::time::Duration;
 
@@ -386,6 +386,7 @@ impl InputBuffer {
 
 enum MenuState {
     MainMenu,
+    Error(String),
     Paused,
     GameTypeSelect(GameType),
     TypeAMenu {
@@ -414,6 +415,7 @@ enum MenuStackCommand {
 
 enum MenuParams {
     Pause,
+    Error(String),
     GameTypeSelect,
     Game(GameTypeParams),
     TypeAMenu,
@@ -482,7 +484,7 @@ impl MenuState {
                 }
                 None
             }
-            Paused => {
+            Paused | Error(_) => {
                 if input.is_pressed(Input::START) {
                     return Some(Pop);
                 }
@@ -636,7 +638,11 @@ impl MenuState {
                 }
 
                 if input.is_pressed(Input::START) {
-                    Some(Pop)
+                    let err = globals
+                        .persist(SAVEPATH)
+                        .err()
+                        .map(|r| Swap(MenuParams::Error(r.to_string())));
+                    err.or_else(|| Some(Pop))
                 } else {
                     None
                 }
@@ -662,6 +668,7 @@ impl MenuState {
     fn from(params: MenuParams) -> Self {
         match params {
             MenuParams::Pause => Paused,
+            MenuParams::Error(e) => Error(e),
             MenuParams::GameTypeSelect => GameTypeSelect(TypeA),
             MenuParams::TypeAMenu => TypeAMenu { level: 0 },
             MenuParams::TypeBMenu => TypeBMenu {
@@ -689,17 +696,33 @@ enum GameType {
     TypeB,
 }
 
+#[derive(Encode, Decode, Debug)]
 struct HighScore {
     name: NameString,
     score: u32,
     level: u8,
 }
 
+#[derive(Encode, Decode, Debug)]
 struct GlobalState {
     leaderboard_type_a: [HighScore; 3],
     leaderboard_type_b: [HighScore; 3],
 }
 impl GlobalState {
+    fn persist(&self, file_path: &str) -> Result<()> {
+        let file = File::create(file_path)?;
+        let mut writer = BufWriter::new(file);
+        bincode::encode_into_std_write(&self, &mut writer, bincode::config::standard())?;
+        Ok(())
+    }
+    fn load(file_path: &str) -> Result<Self> {
+        let res = File::open(file_path);
+        let file = res?;
+        let mut reader = BufReader::new(file);
+        let ret = bincode::decode_from_std_read(&mut reader, bincode::config::standard())?;
+        Ok(ret)
+    }
+
     fn get_highscore(&mut self, params: GameTypeParams) -> &mut [HighScore; 3] {
         match params {
             GameTypeParams::TypeA { .. } => &mut self.leaderboard_type_a,
@@ -713,50 +736,53 @@ struct Tetris {
     globals: GlobalState,
 }
 
+const SAVEPATH: &'static str = "tetris.savestate";
+
 impl Default for Tetris {
     fn default() -> Self {
         let mut vec = ArrayVec::default();
         vec.push(MainMenu);
         //vec.push(Game(GameState::default()));
+        let globals = GlobalState::load(SAVEPATH).unwrap_or_else(|_| GlobalState {
+            leaderboard_type_a: [
+                HighScore {
+                    name: b"CARMEN".to_owned(),
+                    score: 10000,
+                    level: 9,
+                },
+                HighScore {
+                    name: b"MAURO ".to_owned(),
+                    score: 7500,
+                    level: 5,
+                },
+                HighScore {
+                    name: b"FEDE  ".to_owned(),
+                    score: 100,
+                    level: 0,
+                },
+            ],
+            leaderboard_type_b: [
+                HighScore {
+                    name: b"STREQ ".to_owned(),
+                    score: 2000,
+                    level: 9,
+                },
+                HighScore {
+                    name: b"TANO  ".to_owned(),
+                    score: 1000,
+                    level: 5,
+                },
+                HighScore {
+                    name: b"JUAN  ".to_owned(),
+                    score: 500,
+                    level: 0,
+                },
+            ],
+        });
         Self {
             input: Default::default(),
             menu_stack: vec,
-            globals: GlobalState {
-                leaderboard_type_a: [
-                    HighScore {
-                        name: b"CARMEN".to_owned(),
-                        score: 10000,
-                        level: 9,
-                    },
-                    HighScore {
-                        name: b"MAURO ".to_owned(),
-                        score: 7500,
-                        level: 5,
-                    },
-                    HighScore {
-                        name: b"FEDE  ".to_owned(),
-                        score: 5000,
-                        level: 0,
-                    },
-                ],
-                leaderboard_type_b: [
-                    HighScore {
-                        name: b"STREQ ".to_owned(),
-                        score: 2000,
-                        level: 9,
-                    },
-                    HighScore {
-                        name: b"TANO  ".to_owned(),
-                        score: 1000,
-                        level: 5,
-                    },
-                    HighScore {
-                        name: b"JUAN  ".to_owned(),
-                        score: 500,
-                        level: 0,
-                    },
-                ],
-            },
+            globals,
         }
     }
 }
@@ -1474,7 +1500,7 @@ impl RatatuiApp {
         let tetris = Block::new()
             .borders(Borders::all())
             .border_type(BorderType::Rounded)
-            .border_style(Style::new().fg(if game_state.bright { White } else { col1 }))
+            .border_style(Style::new().fg(if game_state.bright { col2 } else { col1 }))
             .title_style(Style::from(col2))
             .title_alignment(Center);
 
@@ -1675,6 +1701,7 @@ impl RatatuiApp {
         let area = inner;
         match state {
             MainMenu => self.draw_main_menu(frame, area),
+            Error(e) => self.draw_error(frame, area, &e),
             Paused => self.draw_pause(frame, area),
             GameTypeSelect(game_type) => self.draw_game_type_select(frame, area, game_type),
             TypeAMenu { level } => self.draw_pregame_menu(frame, area, TypeA, *level, 0, false),
@@ -2178,6 +2205,16 @@ impl RatatuiApp {
             style,
             Some((data.char_index, data.rank)),
         )
+    }
+
+    fn draw_error(&self, frame: &mut Frame, area: Rect, e: &str) {
+        let paragraph = Paragraph::new(e).centered().wrap(Wrap { trim: true });
+        let [area] =
+            Layout::vertical([Constraint::Length(paragraph.line_count(area.width) as u16)])
+                .flex(Flex::Center)
+                .areas(area);
+
+        frame.render_widget(paragraph, area);
     }
 }
 
